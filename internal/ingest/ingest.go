@@ -24,6 +24,13 @@ const maxBody = 1 << 20 // 1MiB
 type Handler struct {
 	DB           *sql.DB
 	KeepMessages int
+	Debug        bool // 受信内容と各購読への送信結果を詳細ログする
+}
+
+func (h *Handler) debugf(format string, args ...any) {
+	if h.Debug {
+		log.Printf("[debug] "+format, args...)
+	}
 }
 
 // Routes は受信用ルートを mux に登録する(UDS 側サーバー専用)。
@@ -112,6 +119,9 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		_ = db.PruneMessages(h.DB, h.KeepMessages)
 	}
 
+	h.debugf("receive channel=#%s webhook=%s(%s) title=%q body_len=%d embeds=%d",
+		chName, t.Name, t.ID, notifTitle, len(body), len(payload.Embeds))
+
 	// 通知クリックで該当チャンネルを開けるよう URL にチャンネル ID を載せる。
 	h.fanout(push.Notification{
 		Title: notifTitle,
@@ -146,16 +156,25 @@ func (h *Handler) fanout(n push.Notification) {
 		log.Printf("list subscriptions: %v", err)
 		return
 	}
+	h.debugf("fanout to %d subscription(s)", len(subs))
 	sender := push.New(v)
 	for _, sub := range subs {
+		host := push.EndpointHost(sub.Endpoint)
 		status, err := sender.Send(sub, n)
 		if err != nil {
-			log.Printf("push send error endpoint=%.40s err=%v", sub.Endpoint, err)
+			// エラーは常時出す。送信先ホスト(apple/fcm 等)を添える。
+			log.Printf("push send error host=%s id=%d err=%v", host, sub.ID, err)
 			continue
 		}
+		// 送信先ホストとプッシュサービスの返却ステータスを記録する。
+		// 2xx 以外(特に 4xx)が iPhone だけ届かない原因の手がかりになる。
+		h.debugf("push sent host=%s id=%d status=%d", host, sub.ID, status)
 		if status == http.StatusNotFound || status == http.StatusGone {
 			_ = db.DeleteSubscriptionByEndpoint(h.DB, sub.Endpoint)
-			log.Printf("pruned expired subscription endpoint=%.40s", sub.Endpoint)
+			log.Printf("pruned expired subscription host=%s id=%d (status=%d)", host, sub.ID, status)
+		} else if status >= 400 {
+			// 失効以外の拒否(例: 4xx/5xx)は常時警告する。
+			log.Printf("push rejected host=%s id=%d status=%d", host, sub.ID, status)
 		}
 	}
 }

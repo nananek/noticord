@@ -10,12 +10,14 @@ const state = {
 };
 
 // ---- 汎用 ----
-function toast(msg) {
+function toast(msg, ms) {
   const t = $('toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove('show'), 2500);
+  // 複数行(テスト結果など)は長めに表示する。
+  const dur = ms || (msg.indexOf('\n') >= 0 ? 6000 : 2500);
+  toast._t = setTimeout(() => t.classList.remove('show'), dur);
 }
 
 async function api(path, opts = {}) {
@@ -219,7 +221,18 @@ async function disableNotifications() {
 
 async function testPush() {
   const d = await (await api('/api/test', { method: 'POST' })).json();
-  toast(`送信: ${d.sent}/${d.subscriptions} 件`);
+  // デバイスごとの結果(apple/fcm + ステータス)を要約して見せる。
+  let detail = '';
+  if (Array.isArray(d.results) && d.results.length) {
+    detail = '\n' + d.results.map((r) => {
+      const where = (r.host || '').includes('apple') ? 'iPhone(apple)'
+        : (r.host || '').includes('google') ? 'Android/Chrome(fcm)'
+        : (r.host || 'device');
+      const st = r.error ? `ERR ${r.error}` : (r.pruned ? `失効(${r.status})` : `OK ${r.status}`);
+      return `・${where}: ${st}`;
+    }).join('\n');
+  }
+  toast(`送信: ${d.sent}/${d.subscriptions} 件${detail}`);
 }
 
 // ---- チャンネル ----

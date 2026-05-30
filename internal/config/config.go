@@ -23,6 +23,7 @@ type Admin struct {
 	VAPIDSubject string // VAPID subject (mailto: など)
 	PublicURL    string // cloudflared で公開する webhook のベース URL
 	KeepMessages int    // 履歴の最大保持件数(0で無制限)
+	Debug        bool   // 受信・プッシュ送信の詳細ログを出すか(NOTICORD_DEBUG)
 }
 
 func LoadAdmin() Admin {
@@ -34,5 +35,15 @@ func LoadAdmin() Admin {
 		VAPIDSubject: Env("NOTICORD_VAPID_SUBJECT", "mailto:admin@example.com"),
 		PublicURL:    strings.TrimRight(Env("NOTICORD_PUBLIC_URL", ""), "/"),
 		KeepMessages: 1000,
+		Debug:        Truthy(Env("NOTICORD_DEBUG", "")),
 	}
+}
+
+// Truthy は環境変数文字列を真偽に解釈する(1/true/yes/on を真)。
+func Truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

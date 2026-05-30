@@ -3,10 +3,22 @@ package push
 
 import (
 	"encoding/json"
+	"net/url"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"noticord/internal/db"
 )
+
+// EndpointHost は購読 endpoint からホスト名だけを取り出す。
+// 送信先が Apple(web.push.apple.com)か FCM(fcm.googleapis.com)かを
+// 秘密のパス部分を晒さずにログ判別するために使う。
+func EndpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return "?"
+	}
+	return u.Host
+}
 
 // Notification は Service Worker へ渡す JSON ペイロード。
 type Notification struct {

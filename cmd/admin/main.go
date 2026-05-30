@@ -110,7 +110,7 @@ func startIngestServer(d *sql.DB, cfg config.Admin) {
 		log.Printf("chmod socket: %v", err)
 	}
 
-	h := &ingest.Handler{DB: d, KeepMessages: cfg.KeepMessages}
+	h := &ingest.Handler{DB: d, KeepMessages: cfg.KeepMessages, Debug: cfg.Debug}
 	imux := http.NewServeMux()
 	h.Routes(imux)
 	isrv := &http.Server{Handler: imux, ReadHeaderTimeout: 10 * time.Second}
@@ -461,23 +461,40 @@ func (s *server) testPush(w http.ResponseWriter, r *http.Request) {
 	}
 	sender := push.New(v)
 	sent := 0
+	// デバイスごとの送信結果(ホスト+ステータス)を返し、UI で切り分けできるようにする。
+	results := make([]map[string]any, 0, len(subs))
 	for _, sub := range subs {
+		host := push.EndpointHost(sub.Endpoint)
 		status, err := sender.Send(sub, push.Notification{
 			Title: "noticord",
 			Body:  "テスト通知です 🔔",
 			URL:   "/",
 			Tag:   "noticord-test",
 		})
+		r := map[string]any{"host": host, "id": sub.ID}
 		if err != nil {
+			r["error"] = err.Error()
+			if s.cfg.Debug {
+				log.Printf("[debug] test push error host=%s id=%d err=%v", host, sub.ID, err)
+			}
+			results = append(results, r)
 			continue
+		}
+		r["status"] = status
+		if s.cfg.Debug {
+			log.Printf("[debug] test push host=%s id=%d status=%d", host, sub.ID, status)
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
 			_ = db.DeleteSubscriptionByEndpoint(s.db, sub.Endpoint)
-			continue
+			r["pruned"] = true
+		} else if status < 400 {
+			sent++
 		}
-		sent++
+		results = append(results, r)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "subscriptions": len(subs)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sent": sent, "subscriptions": len(subs), "results": results,
+	})
 }
 
 // ---- ユーティリティ ----
