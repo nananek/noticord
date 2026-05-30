@@ -9,6 +9,8 @@ const state = {
   authRequired: false,
   unread: {},      // channelId -> 未読件数
   es: null,        // EventSource
+  // 音通知。既定 ON。localStorage で永続化。
+  sound: (typeof localStorage === 'undefined' || localStorage.getItem('sound') !== '0'),
   // ?debug=1 か localStorage.debug=1 でクライアント側 SSE ログを有効化。
   debug: new URL(location.href).searchParams.get('debug') === '1' ||
     (typeof localStorage !== 'undefined' && localStorage.getItem('debug') === '1'),
@@ -523,6 +525,8 @@ function connectSSE() {
       state.unread[ev.channel_id] = (state.unread[ev.channel_id] || 0) + 1;
       renderChannelList();
     }
+    // どのチャンネルでも新着フィードバック(音 + バイブ)。
+    notifyFeedback();
   });
 
   // 認証切れ等で切断されたら EventSource が自動再接続する。
@@ -549,6 +553,68 @@ function sseLog(...args) {
   if (state.debug) console.log('[sse]', ...args);
 }
 
+// ---- 通知音・バイブ(画面を開いているときの新着フィードバック) ----
+// 設計方針: 「気づける最小限・集中の邪魔にならない」。控えめな合成チャイムを
+// Web Audio API でブラウザ内生成(音源ファイル不要=軽量)。OS 通知とは独立。
+let audioCtx = null;
+
+// ブラウザの自動再生ポリシー対策: 最初のユーザー操作で AudioContext を起こす。
+function unlockAudio() {
+  try {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (_) { /* 非対応環境は黙ってスキップ */ }
+}
+
+// playChime は2音(高→低)の控えめなベル風チャイムを鳴らす。
+function playChime() {
+  if (!audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    // ソ→ミ(E5→…) 程度の優しい2音。音量は控えめ(0.12)。
+    [[880, 0], [660, 0.12]].forEach(([freq, delay]) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t = now + delay;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.12, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  } catch (_) { /* 鳴らせなくても致命的でない */ }
+}
+
+// notifyFeedback は新着時のフィードバック(音 + バイブ)をまとめて出す。
+function notifyFeedback() {
+  if (!state.sound) return;
+  playChime();
+  // Android Chrome 等は短いバイブ。iOS Safari は Vibration API 非対応のため無反応。
+  if (navigator.vibrate) {
+    try { navigator.vibrate(80); } catch (_) {}
+  }
+}
+
+function applySoundUI() {
+  const btn = $('soundBtn');
+  if (!btn) return;
+  btn.textContent = state.sound ? '🔔' : '🔕';
+  btn.title = state.sound ? '通知音: ON(クリックで OFF)' : '通知音: OFF(クリックで ON)';
+}
+
+function toggleSound() {
+  state.sound = !state.sound;
+  try { localStorage.setItem('sound', state.sound ? '1' : '0'); } catch (_) {}
+  applySoundUI();
+  if (state.sound) { unlockAudio(); playChime(); } // ON にした瞬間に確認音
+}
+
 // ---- 初期化 ----
 async function init() {
   const me = await (await fetch('/api/me', { credentials: 'same-origin' })).json();
@@ -572,6 +638,13 @@ function wire() {
   $('enableBtn').onclick = enableNotifications;
   $('disableBtn').onclick = disableNotifications;
   $('testBtn').onclick = testPush;
+  $('soundBtn').onclick = toggleSound;
+  applySoundUI();
+
+  // 自動再生ポリシー対策: 最初のユーザー操作で AudioContext を起こす(一度だけ)。
+  const unlockOnce = () => { unlockAudio(); document.removeEventListener('pointerdown', unlockOnce); document.removeEventListener('keydown', unlockOnce); };
+  document.addEventListener('pointerdown', unlockOnce);
+  document.addEventListener('keydown', unlockOnce);
 
   $('addChannelBtn').onclick = () => openModal('addChannelModal');
   $('createChannelBtn').onclick = createChannel;
