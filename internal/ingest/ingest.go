@@ -47,14 +47,13 @@ func (h *Handler) debugf(format string, args ...any) {
 	log.Printf("[debug] "+format, clean...)
 }
 
-// sanitizeLog はログ1行に収める文字列から改行・タブ・制御文字を除去する。
+// sanitizeLog はログ1行に収める文字列から改行・タブを除去する
+// (ログインジェクション対策)。改行の明示置換でログ行の分断を防ぐ。
 func sanitizeLog(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return s
 }
 
 // Routes は受信用ルートを mux に登録する(UDS 側サーバー専用)。

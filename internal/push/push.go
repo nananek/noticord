@@ -15,14 +15,12 @@ import (
 )
 
 // sanitizeLog はログ1行に収める文字列から改行・制御文字を除去する
-// (ログインジェクション対策)。
+// (ログインジェクション対策)。改行の明示置換でログ行の分断を防ぐ。
 func sanitizeLog(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return s
 }
 
 // EndpointHost は購読 endpoint からホスト名だけを取り出す。
