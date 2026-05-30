@@ -7,6 +7,8 @@ const state = {
   channels: [],
   current: null,   // 選択中チャンネル id
   authRequired: false,
+  unread: {},      // channelId -> 未読件数
+  es: null,        // EventSource
 };
 
 // ---- 汎用 ----
@@ -254,9 +256,11 @@ function renderChannelList() {
   for (const c of state.channels) {
     const div = document.createElement('div');
     div.className = 'channel-item' + (c.id === state.current ? ' active' : '');
+    const n = state.unread[c.id] || 0;
+    const badge = n > 0 ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : '';
     div.innerHTML = `
       <span class="hash">#</span>
-      <span class="cname">${escapeHtml(c.name)}</span>`;
+      <span class="cname">${escapeHtml(c.name)}</span>${badge}`;
     div.onclick = () => { selectChannel(c.id); $('app').classList.remove('drawer-open'); };
     el.appendChild(div);
   }
@@ -270,6 +274,7 @@ function renderEmptyMain() {
 
 async function selectChannel(id) {
   state.current = id;
+  state.unread[id] = 0; // 開いたら未読クリア
   const ch = state.channels.find((c) => c.id === id);
   renderChannelList();
   if (ch) {
@@ -311,6 +316,18 @@ async function loadMessages() {
   msgs.reverse();
   for (const m of msgs) el.appendChild(renderMessage(m));
   el.scrollTop = el.scrollHeight;
+}
+
+// appendMessage は SSE で届いた1件を現在のタイムライン末尾に追記する。
+// 一番下付近を見ているときだけ自動スクロールする(上を読んでいる最中の妨げ防止)。
+function appendMessage(m) {
+  const el = $('timeline');
+  // 空状態プレースホルダを除去。
+  const ph = el.querySelector('.center');
+  if (ph) el.innerHTML = '';
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  el.appendChild(renderMessage(m));
+  if (nearBottom) el.scrollTop = el.scrollHeight;
 }
 
 function renderMessage(m) {
@@ -477,6 +494,42 @@ function openModal(id) { $(id).classList.remove('hidden'); }
 function closeModals() {
   $('addChannelModal').classList.add('hidden');
   $('settingsModal').classList.add('hidden');
+}
+
+// ---- SSE(開いている画面へのリアルタイム配信) ----
+// 全チャンネルのイベントを1本で受け、現在のチャンネルは即描画、他は未読バッジを増やす。
+function connectSSE() {
+  if (!('EventSource' in window)) return; // 非対応環境は従来通り(タップ/リロードで更新)
+  if (state.es) { state.es.close(); state.es = null; }
+
+  const es = new EventSource('/api/events', { withCredentials: true });
+  state.es = es;
+
+  es.addEventListener('message', (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch (_) { return; }
+    const m = ev && ev.data;
+    if (!m || !ev.channel_id) return;
+    if (ev.channel_id === state.current) {
+      appendMessage(m);
+    } else {
+      state.unread[ev.channel_id] = (state.unread[ev.channel_id] || 0) + 1;
+      renderChannelList();
+    }
+  });
+
+  // 認証切れ等で切断されたら EventSource が自動再接続する。
+  // ただし 401 は再接続が無限ループになり得るので、その時はログイン画面へ。
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      // サーバーが接続を閉じた(認証切れの可能性)。状態を確認して必要なら再ログイン。
+      fetch('/api/me', { credentials: 'same-origin' })
+        .then((r) => r.json())
+        .then((me) => { if (me.auth_required && !me.authed) showLogin(); })
+        .catch(() => {});
+    }
+    // それ以外(transient)はブラウザが自動再接続するので何もしない。
+  };
 }
 
 // ---- 初期化 ----

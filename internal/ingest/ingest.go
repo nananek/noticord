@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"noticord/internal/broker"
 	"noticord/internal/db"
 	"noticord/internal/discord"
 	"noticord/internal/push"
@@ -24,7 +25,8 @@ const maxBody = 1 << 20 // 1MiB
 type Handler struct {
 	DB           *sql.DB
 	KeepMessages int
-	Debug        bool // 受信内容と各購読への送信結果を詳細ログする
+	Debug        bool           // 受信内容と各購読への送信結果を詳細ログする
+	Broker       *broker.Broker // 受信メッセージを SSE 購読者へリアルタイム配信する
 }
 
 func (h *Handler) debugf(format string, args ...any) {
@@ -101,7 +103,7 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msgID, err := db.AddMessage(h.DB, db.Message{
+	msg := db.Message{
 		TokenID:   t.ID,
 		ChannelID: t.ChannelID,
 		Username:  username,
@@ -110,13 +112,20 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		Embeds:    embedsJSON,
 		Raw:       raw,
 		CreatedAt: time.Now().Unix(),
-	})
+	}
+	msgID, err := db.AddMessage(h.DB, msg)
 	if err != nil {
 		log.Printf("save message: %v", err)
 	}
+	msg.ID = msgID
 	_ = db.TouchToken(h.DB, t.ID)
 	if h.KeepMessages > 0 {
 		_ = db.PruneMessages(h.DB, h.KeepMessages)
+	}
+
+	// 開いている画面へリアルタイム配信する(SSE)。履歴は DB が持つので失敗は許容。
+	if h.Broker != nil {
+		h.Broker.Publish(broker.Event{Type: "message", ChannelID: t.ChannelID, Data: msg})
 	}
 
 	h.debugf("receive channel=#%s webhook=%s(%s) title=%q body_len=%d embeds=%d",

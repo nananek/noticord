@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"noticord/internal/broker"
 	"noticord/internal/config"
 	"noticord/internal/db"
 	"noticord/internal/ingest"
@@ -42,7 +43,8 @@ func main() {
 	}
 	log.Printf("VAPID public key: %s", vapid.Public)
 
-	s := &server{db: d, cfg: cfg, sessions: map[string]bool{}}
+	bkr := broker.New()
+	s := &server{db: d, cfg: cfg, sessions: map[string]bool{}, broker: bkr}
 
 	static, err := fs.Sub(web.FS, "static")
 	if err != nil {
@@ -78,12 +80,15 @@ func main() {
 	mux.Handle("DELETE /api/messages/{id}", s.protect(s.deleteMessage))
 	mux.Handle("POST /api/test", s.protect(s.testPush))
 
+	// 開いている画面へのリアルタイム配信(SSE)
+	mux.Handle("GET /api/events", s.protect(s.events))
+
 	// PWA 静的ファイル
 	mux.Handle("GET /", fileServer)
 
 	// Discord 互換の受信は UDS で listen する(cloudflared が直結する唯一の接点)。
 	// ここには受信ルートしか載せないので、管理 API/履歴はソケットからは触れられない。
-	startIngestServer(d, cfg)
+	startIngestServer(d, cfg, bkr)
 
 	hs := &http.Server{
 		Addr:              cfg.Listen,
@@ -95,7 +100,7 @@ func main() {
 }
 
 // startIngestServer は受信専用ハンドラを UDS で公開する。
-func startIngestServer(d *sql.DB, cfg config.Admin) {
+func startIngestServer(d *sql.DB, cfg config.Admin, bkr *broker.Broker) {
 	if err := os.MkdirAll(filepath.Dir(cfg.IngestSocket), 0o770); err != nil {
 		log.Fatalf("ingest socket dir: %v", err)
 	}
@@ -110,7 +115,7 @@ func startIngestServer(d *sql.DB, cfg config.Admin) {
 		log.Printf("chmod socket: %v", err)
 	}
 
-	h := &ingest.Handler{DB: d, KeepMessages: cfg.KeepMessages, Debug: cfg.Debug}
+	h := &ingest.Handler{DB: d, KeepMessages: cfg.KeepMessages, Debug: cfg.Debug, Broker: bkr}
 	imux := http.NewServeMux()
 	h.Routes(imux)
 	isrv := &http.Server{Handler: imux, ReadHeaderTimeout: 10 * time.Second}
@@ -124,8 +129,9 @@ func startIngestServer(d *sql.DB, cfg config.Admin) {
 }
 
 type server struct {
-	db  *sql.DB
-	cfg config.Admin
+	db     *sql.DB
+	cfg    config.Admin
+	broker *broker.Broker
 
 	mu       sync.Mutex
 	sessions map[string]bool
@@ -495,6 +501,57 @@ func (s *server) testPush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sent": sent, "subscriptions": len(subs), "results": results,
 	})
+}
+
+// ---- SSE(リアルタイム配信) ----
+
+// events は Server-Sent Events で受信メッセージを開いている画面へ流す。
+func (s *server) events(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // プロキシのバッファリング抑止
+
+	ch, cancel := s.broker.Subscribe()
+	defer cancel()
+
+	// 接続確立を即通知(EventSource の onopen を発火させる)。
+	w.Write([]byte("event: ready\ndata: {}\n\n"))
+	flusher.Flush()
+
+	ctx := r.Context()
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, alive := <-ch:
+			if !alive {
+				return
+			}
+			b, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			if _, err := w.Write([]byte("event: " + ev.Type + "\ndata: " + string(b) + "\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			// アイドル接続維持用のコメント行(プロキシのタイムアウト回避)。
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 // ---- ユーティリティ ----
