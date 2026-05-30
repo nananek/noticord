@@ -452,6 +452,29 @@ function appendMessage(m) {
   if (nearBottom) el.scrollTop = el.scrollHeight;
 }
 
+// onLiveUpdate は編集(Discord の PATCH 相当)を現在のタイムラインにその場反映する。
+// 行は削除ボタンの data-del(=message_id)から特定する。
+function onLiveUpdate(m) {
+  if (!m || m.id == null) return;
+  const btn = document.querySelector('.message-row [data-del="' + m.id + '"]');
+  const old = btn && btn.closest('.message-row');
+  if (!old) return;
+  const row = renderMessage(m);
+  old.replaceWith(row);
+  // 編集箇所が分かるよう一瞬ハイライト(CSS 非依存)。
+  row.style.transition = 'background-color 1.2s ease';
+  row.style.backgroundColor = 'rgba(88,101,242,0.18)';
+  requestAnimationFrame(() => { row.style.backgroundColor = ''; });
+}
+
+// onLiveDelete は削除を現在のタイムラインから取り除く。
+function onLiveDelete(id) {
+  if (id == null) return;
+  const btn = document.querySelector('.message-row [data-del="' + id + '"]');
+  const old = btn && btn.closest('.message-row');
+  if (old) old.remove();
+}
+
 function renderMessage(m) {
   const row = document.createElement('div');
   row.className = 'message-row';
@@ -636,6 +659,15 @@ function connectSSE() {
     const m = ev && ev.data;
     if (!m || !ev.channel_id) return;
     sseLog('message', ev.type, ev.channel_id);
+    // 編集・削除は通知/未読バッジを動かさず、開いている画面にだけ反映する(Discord と同じ)。
+    if (ev.type === 'update') {
+      if (ev.channel_id === state.current) onLiveUpdate(m);
+      return;
+    }
+    if (ev.type === 'delete') {
+      if (ev.channel_id === state.current) onLiveDelete(m && m.id);
+      return;
+    }
     if (ev.channel_id === state.current) {
       appendMessage(m);
     } else {

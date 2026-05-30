@@ -54,6 +54,127 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("POST /api/webhooks/{id}/{token}", h.receive)
 	mux.HandleFunc("GET /api/webhooks/{id}/{token}", h.info)
+	// Discord 互換: wait=true で得た message_id を後から編集/削除/取得する。
+	mux.HandleFunc("GET /api/webhooks/{id}/{token}/messages/{mid}", h.getMessage)
+	mux.HandleFunc("PATCH /api/webhooks/{id}/{token}/messages/{mid}", h.editMessage)
+	mux.HandleFunc("DELETE /api/webhooks/{id}/{token}/messages/{mid}", h.deleteMessage)
+}
+
+// resolveMessage は token 認証のうえ、対象メッセージが「その Webhook 発」かを検証して返す。
+// 認証失敗は 401、メッセージ不在/別 Webhook のものは 404(Discord の Unknown Message 相当)。
+func (h *Handler) resolveMessage(w http.ResponseWriter, r *http.Request) (*db.Token, *db.Message) {
+	t := h.auth(r.PathValue("id"), r.PathValue("token"))
+	if t == nil {
+		http.Error(w, `{"message":"Unknown Webhook","code":10015}`, http.StatusUnauthorized)
+		return nil, nil
+	}
+	mid, err := strconv.ParseInt(r.PathValue("mid"), 10, 64)
+	if err != nil {
+		http.Error(w, `{"message":"Unknown Message","code":10008}`, http.StatusNotFound)
+		return nil, nil
+	}
+	m, err := db.GetMessage(h.DB, mid)
+	if err != nil {
+		http.Error(w, `{"message":"Internal Server Error"}`, http.StatusInternalServerError)
+		return nil, nil
+	}
+	// 別の Webhook が発したメッセージは触らせない(改竄防止)。
+	if m == nil || m.TokenID != t.ID {
+		http.Error(w, `{"message":"Unknown Message","code":10008}`, http.StatusNotFound)
+		return nil, nil
+	}
+	return t, m
+}
+
+// messageObject は GET/PATCH 応答用の Discord 風メッセージオブジェクトを組み立てる。
+func messageObject(m *db.Message) map[string]any {
+	return map[string]any{
+		"id":         strconv.FormatInt(m.ID, 10),
+		"type":       0,
+		"channel_id": m.ChannelID,
+		"webhook_id": m.TokenID,
+		"content":    m.Content,
+		"embeds":     json.RawMessage(firstNonEmpty(m.Embeds, "[]")),
+		"timestamp":  time.Unix(m.CreatedAt, 0).UTC().Format(time.RFC3339),
+	}
+}
+
+// getMessage は Webhook が過去に送ったメッセージ1件を返す(Discord 互換 GET)。
+func (h *Handler) getMessage(w http.ResponseWriter, r *http.Request) {
+	_, m := h.resolveMessage(w, r)
+	if m == nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, messageObject(m))
+}
+
+// editMessage はメッセージ本文/embed を上書きする(Discord 互換 PATCH)。
+// 編集では Web Push を再送しない(Discord 同様、編集は通知を出さない)。
+func (h *Handler) editMessage(w http.ResponseWriter, r *http.Request) {
+	t, m := h.resolveMessage(w, r)
+	if m == nil {
+		return
+	}
+
+	payload, raw, err := parsePayload(r)
+	if err != nil {
+		http.Error(w, `{"message":"Cannot send an empty message","code":50006}`, http.StatusBadRequest)
+		return
+	}
+
+	// 本文・embed は全置換。表示名/avatar は指定があれば差し替え、無ければ元を保持。
+	username, _ := payload.Notification(firstNonEmpty(t.Name, "noticord"))
+	if strings.TrimSpace(payload.Username) == "" {
+		username = m.Username
+	}
+	avatar := m.Avatar
+	if a := strings.TrimSpace(payload.AvatarURL); a != "" {
+		avatar = a
+	}
+	embedsJSON := "[]"
+	if len(payload.Embeds) > 0 {
+		if b, e := json.Marshal(payload.Embeds); e == nil {
+			embedsJSON = string(b)
+		}
+	}
+
+	m.Username = username
+	m.Avatar = avatar
+	m.Content = payload.Content
+	m.Embeds = embedsJSON
+	m.Raw = raw
+	if err := db.UpdateMessage(h.DB, *m); err != nil {
+		log.Printf("update message: %v", err)
+		http.Error(w, `{"message":"Internal Server Error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 開いている画面へ「その場編集」を配信する。
+	if h.Broker != nil {
+		h.Broker.Publish(broker.Event{Type: "update", ChannelID: m.ChannelID, Data: m})
+	}
+	h.debugf("edit channel=%s webhook=%s(%s) mid=%d content_len=%d embeds=%d",
+		m.ChannelID, t.Name, t.ID, m.ID, len(payload.Content), len(payload.Embeds))
+
+	writeJSON(w, http.StatusOK, messageObject(m))
+}
+
+// deleteMessage はメッセージを削除する(Discord 互換 DELETE)。
+func (h *Handler) deleteMessage(w http.ResponseWriter, r *http.Request) {
+	t, m := h.resolveMessage(w, r)
+	if m == nil {
+		return
+	}
+	if err := db.DeleteMessage(h.DB, m.ID); err != nil {
+		log.Printf("delete message: %v", err)
+		http.Error(w, `{"message":"Internal Server Error"}`, http.StatusInternalServerError)
+		return
+	}
+	if h.Broker != nil {
+		h.Broker.Publish(broker.Event{Type: "delete", ChannelID: m.ChannelID, Data: map[string]any{"id": strconv.FormatInt(m.ID, 10)}})
+	}
+	h.debugf("delete channel=%s webhook=%s(%s) mid=%d", m.ChannelID, t.Name, t.ID, m.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // auth は id/token を検証し、対応する Token を返す。失敗時は nil。
@@ -154,14 +275,9 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if r.URL.Query().Get("wait") == "true" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id":         msgID,
-			"type":       0,
-			"content":    payload.Content,
-			"channel_id": t.ChannelID,
-			"timestamp":  time.Now().UTC().Format(time.RFC3339),
-			"webhook_id": t.ID,
-		})
+		// Discord 同様、message_id を文字列で含むメッセージオブジェクトを返す。
+		// クライアントはこの id を使って後から PATCH/DELETE できる。
+		writeJSON(w, http.StatusOK, messageObject(&msg))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
