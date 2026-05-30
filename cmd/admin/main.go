@@ -68,6 +68,7 @@ func main() {
 	// チャンネル
 	mux.Handle("GET /api/channels", s.protect(s.listChannels))
 	mux.Handle("POST /api/channels", s.protect(s.createChannel))
+	mux.Handle("POST /api/channels/reorder", s.protect(s.reorderChannels))
 	mux.Handle("PATCH /api/channels/{id}", s.protect(s.updateChannel))
 	mux.Handle("DELETE /api/channels/{id}", s.protect(s.deleteChannel))
 	mux.Handle("GET /api/channels/{id}/webhooks", s.protect(s.listChannelWebhooks))
@@ -313,7 +314,32 @@ func (s *server) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	// Webhook 専用コンセプト: チャンネル作成と同時に Webhook を1つ自動発行し、
+	// 払い出し URL をその場で返す(クライアントは即コピーできる)。
+	tok, err := db.CreateToken(s.db, c.ID, name)
+	var webhook *tokenView
+	if err != nil {
+		log.Printf("auto-create webhook for channel %s: %v", c.ID, err)
+	} else {
+		tv := s.toView(tok)
+		webhook = &tv
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"channel": c, "webhook": webhook})
+}
+
+func (s *server) reorderChannels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Order) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad order"})
+		return
+	}
+	if err := db.ReorderChannels(s.db, body.Order); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *server) updateChannel(w http.ResponseWriter, r *http.Request) {

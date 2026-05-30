@@ -53,6 +53,15 @@
     .channel-item .hash { opacity:.6; font-weight:600; }
     .channel-item .cname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .channel-item .badge { font-size:11px; background:var(--accent); color:#fff; border-radius:999px; padding:0 6px; min-width:18px; text-align:center; }
+    .channel-item .grip { opacity:0; cursor:grab; color:var(--muted); font-size:12px; padding:0 2px; touch-action:none; }
+    .channel-item:hover .grip { opacity:.5; }
+    .channel-item.dragging { opacity:.4; }
+    .channel-item.drop-before { box-shadow:inset 0 2px 0 var(--accent); }
+    .channel-item.drop-after { box-shadow:inset 0 -2px 0 var(--accent); }
+    /* Discord 風「new messages」未読仕切り */
+    .new-divider { display:flex; align-items:center; gap:8px; margin:6px 0; color:var(--danger); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+    .new-divider::before { content:""; flex:1; height:1px; background:var(--danger); opacity:.6; }
+    .new-divider::after { content:""; height:1px; background:var(--danger); opacity:.6; width:8px; }
     .sidebar .foot { border-top:1px solid var(--line); padding:10px; display:flex; flex-direction:column; gap:8px; }
     .sidebar .foot .row { flex-wrap:wrap; }
     .push-guide { font-size:12px; line-height:1.5; color:#ffe1a8; background:#3a2f17; border:1px solid #5c4a20; border-radius:8px; padding:8px 10px; }
@@ -200,6 +209,20 @@
       <div class="row" style="justify-content:flex-end">
         <button class="ghost" data-close-modal>キャンセル</button>
         <button id="createChannelBtn">作成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- チャンネル作成完了モーダル(自動発行された Webhook URL を即表示) -->
+  <div id="createdModal" class="modal-bg hidden">
+    <div class="modal">
+      <h2>#<span id="createdChName"></span> を作成しました</h2>
+      <p class="muted">このチャンネル宛の Webhook URL を発行しました。送信元サービスの Discord Webhook 先に貼り付けてください。</p>
+      <div class="url" id="createdUrl"></div>
+      <div class="row">
+        <button id="createdCopyBtn">URL をコピー</button>
+        <span class="grow"></span>
+        <button class="ghost" data-close-modal>閉じる</button>
       </div>
     </div>
   </div>

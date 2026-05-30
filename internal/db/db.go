@@ -271,6 +271,10 @@ func EnsureDefaultChannel(d *sql.DB) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Webhook 専用コンセプト: 既定チャンネルにも Webhook を1つ用意しておく。
+	if _, err := CreateToken(d, c.ID, "general"); err != nil {
+		return "", err
+	}
 	return c.ID, nil
 }
 
@@ -323,6 +327,22 @@ func GetChannel(d *sql.DB, id string) (*Channel, error) {
 func UpdateChannel(d *sql.DB, id, name, topic string) error {
 	_, err := d.Exec("UPDATE channels SET name=?, topic=? WHERE id=?", name, topic, id)
 	return err
+}
+
+// ReorderChannels は与えられた id 順に position を 0..n-1 で振り直す。
+// orderedIDs に含まれないチャンネルは末尾(既存 position 維持で後ろ)に残す。
+func ReorderChannels(d *sql.DB, orderedIDs []string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range orderedIDs {
+		if _, err := tx.Exec("UPDATE channels SET position=? WHERE id=?", i, id); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // DeleteChannel はチャンネルと、それに紐付くトークン・メッセージをまとめて削除する。

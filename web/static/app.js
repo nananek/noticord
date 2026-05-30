@@ -8,6 +8,8 @@ const state = {
   current: null,   // 選択中チャンネル id
   authRequired: false,
   unread: {},      // channelId -> 未読件数
+  // channelId -> 既読の最大メッセージ id(Discord 風「new messages」仕切り用)。
+  lastRead: loadLastRead(),
   es: null,        // EventSource
   // 音通知。既定 ON。localStorage で永続化。
   sound: (typeof localStorage === 'undefined' || localStorage.getItem('sound') !== '0'),
@@ -15,6 +17,15 @@ const state = {
   debug: new URL(location.href).searchParams.get('debug') === '1' ||
     (typeof localStorage !== 'undefined' && localStorage.getItem('debug') === '1'),
 };
+
+// 既読位置(channelId -> 最大既読メッセージ id)を localStorage で永続化する。
+function loadLastRead() {
+  try { return JSON.parse(localStorage.getItem('lastRead') || '{}') || {}; }
+  catch (_) { return {}; }
+}
+function saveLastRead() {
+  try { localStorage.setItem('lastRead', JSON.stringify(state.lastRead)); } catch (_) {}
+}
 
 // ---- 汎用 ----
 function toast(msg, ms) {
@@ -262,13 +273,68 @@ function renderChannelList() {
   for (const c of state.channels) {
     const div = document.createElement('div');
     div.className = 'channel-item' + (c.id === state.current ? ' active' : '');
+    div.draggable = true;
+    div.dataset.id = c.id;
     const n = state.unread[c.id] || 0;
     const badge = n > 0 ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : '';
     div.innerHTML = `
+      <span class="grip" title="ドラッグで並び替え">⠿</span>
       <span class="hash">#</span>
       <span class="cname">${escapeHtml(c.name)}</span>${badge}`;
     div.onclick = () => { selectChannel(c.id); $('app').classList.remove('drawer-open'); };
+    wireChannelDrag(div);
     el.appendChild(div);
+  }
+}
+
+// ---- チャンネル並び替え(ドラッグ&ドロップ) ----
+let dragId = null;
+
+function wireChannelDrag(el) {
+  el.addEventListener('dragstart', (e) => {
+    dragId = el.dataset.id;
+    el.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', dragId); } catch (_) {}
+  });
+  el.addEventListener('dragend', () => {
+    dragId = null;
+    document.querySelectorAll('.channel-item').forEach((x) =>
+      x.classList.remove('dragging', 'drop-before', 'drop-after'));
+  });
+  el.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (!dragId || el.dataset.id === dragId) return;
+    const before = e.offsetY < el.offsetHeight / 2;
+    el.classList.toggle('drop-before', before);
+    el.classList.toggle('drop-after', !before);
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const before = el.classList.contains('drop-before');
+    el.classList.remove('drop-before', 'drop-after');
+    if (dragId && el.dataset.id !== dragId) reorderChannel(dragId, el.dataset.id, before);
+  });
+}
+
+async function reorderChannel(srcId, dstId, before) {
+  const ids = state.channels.map((c) => c.id);
+  const from = ids.indexOf(srcId);
+  if (from < 0) return;
+  ids.splice(from, 1); // 元位置から抜く
+  let to = ids.indexOf(dstId);
+  if (to < 0) return;
+  if (!before) to += 1; // 後ろに落とすなら1つ後ろへ
+  ids.splice(to, 0, srcId);
+  // ローカルを即並べ替えて即描画(楽観的更新)、その後サーバーへ永続化。
+  state.channels.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  renderChannelList();
+  try {
+    await api('/api/channels/reorder', { method: 'POST', body: JSON.stringify({ order: ids }) });
+  } catch (_) {
+    toast('並び替えの保存に失敗しました');
+    await loadChannels(state.current);
   }
 }
 
@@ -301,27 +367,66 @@ async function createChannel() {
     name, topic: $('newChannelTopic').value,
   }) });
   if (!res.ok) { const e = await res.json(); toast(e.error || '作成失敗'); return; }
-  const c = await res.json();
+  const { channel: c, webhook } = await res.json();
   $('newChannelName').value = ''; $('newChannelTopic').value = '';
   closeModals();
   await loadChannels(c.id);
+  // Webhook 専用コンセプト: 自動発行された URL をその場で提示して即コピーできるように。
+  if (webhook && webhook.url) {
+    $('createdChName').textContent = c.name;
+    $('createdUrl').textContent = webhook.url;
+    $('createdCopyBtn').onclick = () => copyText(webhook.url);
+    openModal('createdModal');
+  } else {
+    toast(`#${c.name} を作成しました`);
+  }
+  return;
   toast(`#${c.name} を作成しました`);
 }
 
 // ---- メッセージ ----
+function newDivider() {
+  const d = document.createElement('div');
+  d.className = 'new-divider';
+  d.id = 'newDivider';
+  d.textContent = 'new messages';
+  return d;
+}
+
 async function loadMessages() {
   if (!state.current) return;
-  const msgs = await (await api(`/api/channels/${state.current}/messages?limit=100`)).json();
+  const cid = state.current;
+  const msgs = await (await api(`/api/channels/${cid}/messages?limit=100`)).json();
   const el = $('timeline');
   el.innerHTML = '';
   if (!msgs.length) {
     el.innerHTML = '<p class="center">まだ通知はありません。<br>このチャンネルのWebhook URLに送ると、ここに表示されます。</p>';
+    state.lastRead[cid] = 0; saveLastRead();
     return;
   }
   // 古い→新しいの順に縦に並べる(チャットらしく)
   msgs.reverse();
-  for (const m of msgs) el.appendChild(renderMessage(m));
-  el.scrollTop = el.scrollHeight;
+
+  // Discord 風「new messages」仕切り: 開いた時点の既読 id を基準に、
+  // それより新しい最初のメッセージの直前へ1本だけ入れる。
+  const seen = state.lastRead[cid] || 0;
+  let dividerShown = false;
+  for (const m of msgs) {
+    if (!dividerShown && seen > 0 && m.id > seen) {
+      el.appendChild(newDivider());
+      dividerShown = true;
+    }
+    el.appendChild(renderMessage(m));
+  }
+
+  // 既読位置を最新まで進める(次に開いたときは今回分は「既読」扱い)。
+  state.lastRead[cid] = msgs[msgs.length - 1].id;
+  saveLastRead();
+
+  // 仕切りがあればそこへ、無ければ最下部へスクロール。
+  const dv = $('newDivider');
+  if (dv) dv.scrollIntoView({ block: 'center' });
+  else el.scrollTop = el.scrollHeight;
 }
 
 // appendMessage は SSE で届いた1件を現在のタイムライン末尾に追記する。
@@ -332,7 +437,18 @@ function appendMessage(m) {
   const ph = el.querySelector('.center');
   if (ph) el.innerHTML = '';
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+
+  // タブが非表示の間に来た最初の1件には「new messages」仕切りを出す
+  // (見ていない=未読扱い)。表示中ならライブ追記として既読を進める。
+  if (document.hidden && !$('newDivider')) {
+    el.appendChild(newDivider());
+  }
   el.appendChild(renderMessage(m));
+
+  if (!document.hidden) {
+    state.lastRead[state.current] = m.id;
+    saveLastRead();
+  }
   if (nearBottom) el.scrollTop = el.scrollHeight;
 }
 
@@ -500,6 +616,7 @@ function openModal(id) { $(id).classList.remove('hidden'); }
 function closeModals() {
   $('addChannelModal').classList.add('hidden');
   $('settingsModal').classList.add('hidden');
+  $('createdModal').classList.add('hidden');
 }
 
 // ---- SSE(開いている画面へのリアルタイム配信) ----
