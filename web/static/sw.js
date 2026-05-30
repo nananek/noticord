@@ -4,20 +4,35 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener('push', (event) => {
-  let data = { title: 'noticord', body: '', url: '/' };
-  if (event.data) {
-    try { data = Object.assign(data, event.data.json()); }
-    catch (_) { data.body = event.data.text(); }
-  }
-  const options = {
-    body: data.body,
-    icon: '/icon.svg',
-    badge: '/icon.svg',
-    tag: data.tag || 'noticord',
-    data: { url: data.url || '/' },
-    renotify: true,
+  // iOS は push 受信時に必ず1件通知を出さないと購読を剥奪する。
+  // データ欠落・パース失敗でも確実に showNotification を呼べるよう全体を try で包む。
+  const show = async () => {
+    let data = { title: 'noticord', body: '', url: '/' };
+    try {
+      if (event.data) {
+        try { data = Object.assign(data, event.data.json()); }
+        catch (_) { data.body = event.data.text(); }
+      }
+    } catch (_) { /* 取り出し失敗時もフォールバック通知を出す */ }
+
+    const options = {
+      body: data.body || '新しい通知',
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      tag: data.tag || 'noticord',
+      data: { url: data.url || '/' },
+      renotify: true,
+      // iOS でロック画面に残りやすくするため timestamp を付与。
+      timestamp: Date.now(),
+    };
+    try {
+      await self.registration.showNotification(data.title || 'noticord', options);
+    } catch (_) {
+      // 最低限のフォールバック(購読剥奪を避けるため必ず1件出す)。
+      await self.registration.showNotification('noticord', { body: '新しい通知', icon: '/icon.svg' });
+    }
   };
-  event.waitUntil(self.registration.showNotification(data.title || 'noticord', options));
+  event.waitUntil(show());
 });
 
 self.addEventListener('notificationclick', (event) => {

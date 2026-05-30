@@ -104,13 +104,60 @@ function urlBase64ToUint8Array(base64String) {
   return out;
 }
 
-async function refreshNotifStatus() {
-  const dot = $('notifDot');
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    dot.textContent = '非対応'; dot.className = 'status off';
-    $('enableBtn').disabled = true;
+// iOS / iPadOS の判定(iPadOS は Mac を騙るのでタッチ有無で補足)。
+function isIOS() {
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+// ホーム画面に追加した PWA として起動しているか。
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+}
+
+// Push が使える環境か(SW + PushManager + Notification が揃っているか)。
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+// iOS でタブから開いている等、鳴らない状態のときに誘導バナーを出す。
+function updateGuidance() {
+  const el = $('pushGuide');
+  if (!el) return;
+  // 既に通知 ON なら案内不要。
+  if (Notification && Notification.permission === 'granted' && pushSupported()) {
+    el.classList.add('hidden');
     return;
   }
+  let msg = '';
+  if (isIOS() && !isStandalone()) {
+    // iOS はホーム画面 PWA でしか Web Push が動かない。
+    msg = '📲 iPhone / iPad では、共有メニューの「ホーム画面に追加」で追加し、' +
+      'その<b>アイコンから起動</b>してから通知を有効化してください。Safari のタブでは通知が鳴りません。';
+  } else if (!pushSupported()) {
+    if (isIOS()) {
+      msg = '📲 この端末では通知に未対応です。iOS 16.4 以上にして、' +
+        'ホーム画面に追加したアイコンから起動してください。';
+    } else {
+      msg = 'このブラウザは Web Push に対応していません。';
+    }
+  }
+  if (msg) { el.innerHTML = msg; el.classList.remove('hidden'); }
+  else el.classList.add('hidden');
+}
+
+async function refreshNotifStatus() {
+  const dot = $('notifDot');
+  updateGuidance();
+  if (!pushSupported()) {
+    dot.textContent = '非対応'; dot.className = 'status off';
+    // iOS タブ時は「有効化」を押させて誘導を出したいので disabled にはしない。
+    $('enableBtn').disabled = !isIOS();
+    return;
+  }
+  $('enableBtn').disabled = false;
   swReg = await navigator.serviceWorker.getRegistration();
   const sub = swReg ? await swReg.pushManager.getSubscription() : null;
   if (sub && Notification.permission === 'granted') {
@@ -125,20 +172,37 @@ async function refreshNotifStatus() {
 }
 
 async function enableNotifications() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    toast('このブラウザはWeb Push非対応です'); return;
+  // iOS でタブ起動だと PushManager が無く、購読しても鳴らない。先に誘導する。
+  if (isIOS() && !isStandalone()) {
+    updateGuidance();
+    toast('まず「ホーム画面に追加」して、そのアイコンから開いてください');
+    return;
+  }
+  if (!pushSupported()) {
+    toast('このブラウザはWeb Push非対応です');
+    updateGuidance();
+    return;
   }
   const perm = await Notification.requestPermission();
-  if (perm !== 'granted') { toast('通知が許可されませんでした'); return; }
+  if (perm !== 'granted') {
+    toast(perm === 'denied'
+      ? '通知がブロックされています。端末の設定から許可してください'
+      : '通知が許可されませんでした');
+    return;
+  }
   swReg = await navigator.serviceWorker.register('/sw.js');
   await navigator.serviceWorker.ready;
-  const { key } = await (await api('/api/vapid-public-key')).json();
-  const sub = await swReg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(key),
-  });
-  await api('/api/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
-  toast('通知を有効化しました');
+  try {
+    const { key } = await (await api('/api/vapid-public-key')).json();
+    const sub = await swReg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(key),
+    });
+    await api('/api/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
+    toast('通知を有効化しました');
+  } catch (e) {
+    toast('購読に失敗しました: ' + (e && e.message ? e.message : e));
+  }
   await refreshNotifStatus();
 }
 

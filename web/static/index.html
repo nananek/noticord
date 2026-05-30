@@ -55,6 +55,8 @@
     .channel-item .badge { font-size:11px; background:var(--accent); color:#fff; border-radius:999px; padding:0 6px; min-width:18px; text-align:center; }
     .sidebar .foot { border-top:1px solid var(--line); padding:10px; display:flex; flex-direction:column; gap:8px; }
     .sidebar .foot .row { flex-wrap:wrap; }
+    .push-guide { font-size:12px; line-height:1.5; color:#ffe1a8; background:#3a2f17; border:1px solid #5c4a20; border-radius:8px; padding:8px 10px; }
+    .push-guide b { color:#fff; }
     .status { font-size:12px; padding:3px 8px; border-radius:999px; background:var(--panel2); }
     .status.ok { color:var(--ok); }
     .status.off { color:var(--muted); }
@@ -154,6 +156,7 @@
         <div id="channelList"></div>
       </div>
       <div class="foot">
+        <div id="pushGuide" class="push-guide hidden"></div>
         <div class="row">
           <button id="enableBtn" class="secondary grow">通知を有効化</button>
           <button id="testBtn" class="ghost" title="テスト通知">🔔</button>
