@@ -532,6 +532,30 @@ func ListMessagesByChannel(d *sql.DB, channelID string, limit int) ([]Message, e
 	return scanMessages(rows)
 }
 
+// GetMessage は ID で1件取得する。存在しなければ (nil, nil)。
+// Discord 互換のメッセージ編集/削除で、対象が当該 Webhook 発かを検証するために使う。
+func GetMessage(d *sql.DB, id int64) (*Message, error) {
+	var m Message
+	err := d.QueryRow("SELECT "+messageCols+" FROM messages WHERE id=?", id).
+		Scan(&m.ID, &m.TokenID, &m.ChannelID, &m.Username, &m.Avatar, &m.Content, &m.Embeds, &m.Raw, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UpdateMessage は本文・embed・表示名・avatar・raw を上書きする(Discord の PATCH 相当)。
+// created_at は据え置く(編集で並び順を変えない)。
+func UpdateMessage(d *sql.DB, m Message) error {
+	_, err := d.Exec(
+		"UPDATE messages SET username=?, avatar=?, content=?, embeds=?, raw=? WHERE id=?",
+		m.Username, m.Avatar, m.Content, m.Embeds, m.Raw, m.ID)
+	return err
+}
+
 func DeleteMessage(d *sql.DB, id int64) error {
 	_, err := d.Exec("DELETE FROM messages WHERE id=?", id)
 	return err

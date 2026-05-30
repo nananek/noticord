@@ -117,6 +117,33 @@ curl -X POST "$NOTICORD_PUBLIC_URL/api/webhooks/<id>/<token>" \
   -d '{"username":"test","embeds":[{"title":"hello","description":"**bold** and `code`","color":5814783}]}'
 ```
 
+### メッセージの編集・削除(Discord 互換)
+
+Discord の Webhook と同じく、`?wait=true` で受け取った `id`(message_id)を使って後から編集・削除できます。
+URL は発行された Webhook URL に `/messages/<message_id>` を付けるだけです。
+
+```bash
+# 送信して message_id を取得
+MID=$(curl -s -X POST "$WEBHOOK_URL?wait=true" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"処理中…"}' | jq -r .id)
+
+# 編集(本文・embed を差し替え。通知は再送されません)
+curl -X PATCH "$WEBHOOK_URL/messages/$MID" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"✅ 完了しました"}'
+
+# 取得 / 削除
+curl "$WEBHOOK_URL/messages/$MID"
+curl -X DELETE "$WEBHOOK_URL/messages/$MID"
+```
+
+- `PATCH` … `content` / `embeds` を全置換。`username` / `avatar_url` は指定時のみ更新。`200` でメッセージを返却。
+- `GET` … メッセージオブジェクトを返却。
+- `DELETE` … `204 No Content`。
+- 編集・削除は開いている画面に **SSE でその場反映**(編集は再通知なし、Discord と同じ)。
+- 他の Webhook が送ったメッセージは編集・削除できません(`404 Unknown Message`)。
+
 ## 運用メモ
 
 - **データ**: すべて `./data/noticord.db`(SQLite, WAL)。バックアップはこのファイルを退避するだけ。
