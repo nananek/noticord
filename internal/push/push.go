@@ -8,20 +8,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"noticord/internal/db"
 )
-
-// sanitizeLog はログ1行に収める文字列から改行・制御文字を除去する
-// (ログインジェクション対策)。改行の明示置換でログ行の分断を防ぐ。
-func sanitizeLog(s string) string {
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\t", " ")
-	return s
-}
 
 // EndpointHost は購読 endpoint からホスト名だけを取り出す。
 // 送信先が Apple(web.push.apple.com)か FCM(fcm.googleapis.com)かを
@@ -106,10 +98,10 @@ func (c *loggingClient) Do(req *http.Request) (*http.Response, error) {
 		// ボディを読み切ってログし、呼び出し側が再度読めるよう詰め直す。
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		// プッシュサービス応答は外部入力。改行・制御文字を除去してから記録する
-		// (ログインジェクション対策)。%q で更にクォートエスケープされる。
-		log.Printf("[debug] push response host=%s status=%d body=%q",
-			req.URL.Host, resp.StatusCode, sanitizeLog(strings.TrimSpace(string(body))))
+		// プッシュサービス応答は外部入力。strconv.Quote でクォート・エスケープして
+		// 改行注入を防ぐ(ログインジェクション対策。CodeQL のサニタイザに合致)。
+		log.Printf("[debug] push response host=%s status=%d body=%s",
+			req.URL.Host, resp.StatusCode, strconv.Quote(strings.TrimSpace(string(body))))
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return resp, err

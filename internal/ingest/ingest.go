@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,25 +36,17 @@ func (h *Handler) debugf(format string, args ...any) {
 	}
 	// 外部由来の文字列(チャンネル名・Webhook名・通知タイトル等)が
 	// ログに改行・制御文字を注入する(ログインジェクション)のを防ぐため、
-	// 文字列引数をサニタイズしてからフォーマットする。
+	// 文字列引数を strconv.Quote でクォート・エスケープしてからフォーマットする。
+	// 呼び出し側の対応する書式指定子は %s にしておくこと(値はクォート済み)。
 	clean := make([]any, len(args))
 	for i, a := range args {
 		if s, ok := a.(string); ok {
-			clean[i] = sanitizeLog(s)
+			clean[i] = strconv.Quote(s)
 		} else {
 			clean[i] = a
 		}
 	}
 	log.Printf("[debug] "+format, clean...)
-}
-
-// sanitizeLog はログ1行に収める文字列から改行・タブを除去する
-// (ログインジェクション対策)。改行の明示置換でログ行の分断を防ぐ。
-func sanitizeLog(s string) string {
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\t", " ")
-	return s
 }
 
 // Routes は受信用ルートを mux に登録する(UDS 側サーバー専用)。
@@ -149,7 +142,7 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		h.Broker.Publish(broker.Event{Type: "message", ChannelID: t.ChannelID, Data: msg})
 	}
 
-	h.debugf("receive channel=#%s webhook=%s(%s) title=%q body_len=%d embeds=%d",
+	h.debugf("receive channel=#%s webhook=%s(%s) title=%s body_len=%d embeds=%d",
 		chName, t.Name, t.ID, notifTitle, len(body), len(payload.Embeds))
 
 	// 通知クリックで該当チャンネルを開けるよう URL にチャンネル ID を載せる。
