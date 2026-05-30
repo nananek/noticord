@@ -14,6 +14,17 @@ import (
 	"noticord/internal/db"
 )
 
+// sanitizeLog はログ1行に収める文字列から改行・制御文字を除去する
+// (ログインジェクション対策)。
+func sanitizeLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
 // EndpointHost は購読 endpoint からホスト名だけを取り出す。
 // 送信先が Apple(web.push.apple.com)か FCM(fcm.googleapis.com)かを
 // 秘密のパス部分を晒さずにログ判別するために使う。
@@ -97,8 +108,10 @@ func (c *loggingClient) Do(req *http.Request) (*http.Response, error) {
 		// ボディを読み切ってログし、呼び出し側が再度読めるよう詰め直す。
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+		// プッシュサービス応答は外部入力。改行・制御文字を除去してから記録する
+		// (ログインジェクション対策)。%q で更にクォートエスケープされる。
 		log.Printf("[debug] push response host=%s status=%d body=%q",
-			req.URL.Host, resp.StatusCode, strings.TrimSpace(string(body)))
+			req.URL.Host, resp.StatusCode, sanitizeLog(strings.TrimSpace(string(body))))
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return resp, err

@@ -30,9 +30,31 @@ type Handler struct {
 }
 
 func (h *Handler) debugf(format string, args ...any) {
-	if h.Debug {
-		log.Printf("[debug] "+format, args...)
+	if !h.Debug {
+		return
 	}
+	// 外部由来の文字列(チャンネル名・Webhook名・通知タイトル等)が
+	// ログに改行・制御文字を注入する(ログインジェクション)のを防ぐため、
+	// 文字列引数をサニタイズしてからフォーマットする。
+	clean := make([]any, len(args))
+	for i, a := range args {
+		if s, ok := a.(string); ok {
+			clean[i] = sanitizeLog(s)
+		} else {
+			clean[i] = a
+		}
+	}
+	log.Printf("[debug] "+format, clean...)
+}
+
+// sanitizeLog はログ1行に収める文字列から改行・タブ・制御文字を除去する。
+func sanitizeLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // Routes は受信用ルートを mux に登録する(UDS 側サーバー専用)。
