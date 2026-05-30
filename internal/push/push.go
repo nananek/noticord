@@ -3,7 +3,6 @@ package push
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -63,7 +62,8 @@ func (s Sender) Send(sub db.Subscription, n Notification) (int, error) {
 		TTL:             86400,
 		Urgency:         webpush.UrgencyHigh,
 	}
-	// デバッグ時は実際に飛ぶ HTTP リクエスト/レスポンスを傍受してログする。
+	// デバッグ時は 4xx/5xx のプッシュサービス応答ボディ(Apple は具体的な
+	// 拒否理由を返す)を傍受してログする。
 	if s.debug {
 		opts.HTTPClient = &loggingClient{inner: http.DefaultClient}
 	}
@@ -82,14 +82,13 @@ func (s Sender) Send(sub db.Subscription, n Notification) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// loggingClient は VAPID リクエストの JWT クレームと、4xx/5xx 時の
-// プッシュサービス応答ボディ(Apple は具体的な拒否理由を返す)をログする。
+// loggingClient は 4xx/5xx 時のプッシュサービス応答(host・status・本文)を
+// ログする。秘密情報(JWT / Authorization / 購読鍵)は意図的にログしない。
 type loggingClient struct {
 	inner *http.Client
 }
 
 func (c *loggingClient) Do(req *http.Request) (*http.Response, error) {
-	logVAPIDRequest(req)
 	resp, err := c.inner.Do(req)
 	if err != nil {
 		return resp, err
@@ -103,48 +102,4 @@ func (c *loggingClient) Do(req *http.Request) (*http.Response, error) {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return resp, err
-}
-
-// logVAPIDRequest は Authorization: "vapid t=<jwt>, k=<key>" を分解し、
-// JWT の aud/sub/exp クレームと、各値の先頭を秘密を晒さない範囲でログする。
-func logVAPIDRequest(req *http.Request) {
-	auth := req.Header.Get("Authorization")
-	t, k := parseVAPIDAuth(auth)
-	aud, sub, exp := decodeJWTClaims(t)
-	log.Printf("[debug] vapid host=%s aud=%q sub=%q exp=%d auth=%.16s… k=%.16s…",
-		req.URL.Host, aud, sub, exp, auth, k)
-}
-
-// parseVAPIDAuth は "vapid t=<jwt>, k=<key>" から t と k を取り出す。
-func parseVAPIDAuth(auth string) (t, k string) {
-	auth = strings.TrimPrefix(auth, "vapid ")
-	for _, part := range strings.Split(auth, ",") {
-		part = strings.TrimSpace(part)
-		if v, ok := strings.CutPrefix(part, "t="); ok {
-			t = v
-		} else if v, ok := strings.CutPrefix(part, "k="); ok {
-			k = v
-		}
-	}
-	return t, k
-}
-
-// decodeJWTClaims は JWT のペイロード(2番目のセグメント)から
-// aud/sub/exp を取り出す。署名検証はしない(ログ用途)。
-func decodeJWTClaims(jwt string) (aud, sub string, exp int64) {
-	parts := strings.Split(jwt, ".")
-	if len(parts) < 2 {
-		return "", "", 0
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", "", 0
-	}
-	var c struct {
-		Aud string `json:"aud"`
-		Sub string `json:"sub"`
-		Exp int64  `json:"exp"`
-	}
-	_ = json.Unmarshal(raw, &c)
-	return c.Aud, c.Sub, c.Exp
 }
