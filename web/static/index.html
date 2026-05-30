@@ -131,10 +131,13 @@
 
     /* モバイル: サイドバーをドロワー化 */
     .mobile-only { display:none; }
+    /* ドロワー開時の背面スクリム(右側の余白タップで閉じる/メイン誤操作を防ぐ) */
+    #drawerScrim { display:none; }
     @media (max-width:720px) {
       #app { grid-template-columns:1fr; }
       .sidebar { position:fixed; inset:0 40% 0 0; z-index:40; transform:translateX(-100%); transition:transform .2s; }
       #app.drawer-open .sidebar { transform:translateX(0); }
+      #app.drawer-open #drawerScrim { display:block; position:fixed; inset:0; z-index:39; background:#0006; }
       .mobile-only { display:inline-flex; }
     }
   </style>
@@ -154,6 +157,8 @@
 
   <!-- アプリ -->
   <div id="app" class="hidden">
+    <!-- ドロワー開時に右側の余白を覆うスクリム(タップで閉じる) -->
+    <div id="drawerScrim"></div>
     <!-- サイドバー -->
     <aside class="sidebar">
       <div class="brand">

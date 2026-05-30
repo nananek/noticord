@@ -807,6 +807,8 @@ function wire() {
   $('clearMessagesBtn').onclick = clearMessages;
 
   $('menuBtn').onclick = () => $('app').classList.toggle('drawer-open');
+  // 背面スクリム(右側の余白)タップ: チャンネルは切り替えず閉じるだけ
+  $('drawerScrim').onclick = () => $('app').classList.remove('drawer-open');
 
   document.querySelectorAll('[data-close-modal]').forEach((b) => { b.onclick = closeModals; });
   document.querySelectorAll('.modal-bg').forEach((bg) => {
