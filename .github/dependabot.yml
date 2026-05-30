@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Go モジュール
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-deps:
+        patterns:
+          - "*"
+
+  # GitHub Actions のバージョン
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Dockerfile のベースイメージ(golang / distroless)
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly

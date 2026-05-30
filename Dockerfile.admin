@@ -1,10 +1,20 @@
 # 画面サーバー(admin)。distroless/static:nonroot で配信。
-FROM golang:1.23-alpine AS build
+# buildx のマルチアーキ向けに、ビルドステージは常にネイティブで動かし
+# Go のクロスコンパイル(TARGETOS/TARGETARCH)で出力する(QEMU 実行より高速)。
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
+
+# 依存だけ先に取得してレイヤキャッシュを効かせる。
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
-RUN go mod tidy
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/admin ./cmd/admin
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/admin ./cmd/admin
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/admin /admin
