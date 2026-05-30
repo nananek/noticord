@@ -1,0 +1,59 @@
+services:
+  # 1) Tailscale: 管理画面(admin)を tailnet に HTTPS で公開する。
+  #    admin は network_mode で本コンテナのネットワーク名前空間を共有する。
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: noticord
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:?set TS_AUTHKEY in .env}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+      - TS_EXTRA_ARGS=--ssh=false
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  # 2) 中核プロセス: PWA 配信・管理 API(tailscale netns 上の TCP)+ Discord 互換受信(UDS)。
+  #    DB・VAPID・Web Push 送信をすべて所有する。アプリ間のブリッジ網は持たない。
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    depends_on:
+      - tailscale
+    network_mode: service:tailscale
+    environment:
+      - NOTICORD_LISTEN=127.0.0.1:8080
+      - NOTICORD_DB=/data/noticord.db
+      - NOTICORD_INGEST_SOCKET=/run/noticord/ingest.sock
+      - NOTICORD_ADMIN_PASSWORD=${NOTICORD_ADMIN_PASSWORD:-}
+      - NOTICORD_PUBLIC_URL=${NOTICORD_PUBLIC_URL:-}
+      - NOTICORD_VAPID_SUBJECT=${NOTICORD_VAPID_SUBJECT:-mailto:admin@example.com}
+    volumes:
+      - ./data:/data          # SQLite(admin 専有)
+      - ./run:/run/noticord      # ingest.sock を cloudflared と共有する唯一の接点
+    restart: unless-stopped
+
+  # 3) cloudflared: Discord 互換 URL を公開し、admin の UDS へ直結する。
+  #    Zero Trust ダッシュボードで Public Hostname の Type を「Unix Socket」、
+  #    URL を /run/noticord/ingest.sock に設定すること(下記 README 参照)。
+  #    ブリッジ網への接続は持たず、唯一の内部接点は共有ソケットだけ。
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    user: "65532:65532"          # admin と同一 uid にして 0660 ソケットへ connect 可能に
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    volumes:
+      - ./run:/run/noticord:rw
+    depends_on:
+      - admin
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:

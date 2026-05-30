@@ -1,0 +1,12 @@
+# 画面サーバー(admin)。distroless/static:nonroot で配信。
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache git ca-certificates
+COPY . .
+RUN go mod tidy
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/admin ./cmd/admin
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/admin /admin
+USER nonroot:nonroot
+ENTRYPOINT ["/admin"]

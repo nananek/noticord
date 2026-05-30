@@ -1,0 +1,50 @@
+// Package push は Web Push (VAPID) 送信の薄いラッパ。
+package push
+
+import (
+	"encoding/json"
+
+	webpush "github.com/SherClockHolmes/webpush-go"
+	"noticord/internal/db"
+)
+
+// Notification は Service Worker へ渡す JSON ペイロード。
+type Notification struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	URL   string `json:"url,omitempty"`
+	Tag   string `json:"tag,omitempty"`
+}
+
+type Sender struct {
+	v db.VAPID
+}
+
+func New(v db.VAPID) Sender { return Sender{v: v} }
+
+// Send は単一購読へ送信し、HTTP ステータスコードを返す。
+// 404/410 は購読失効を意味するため、呼び出し側で購読削除に使う。
+func (s Sender) Send(sub db.Subscription, n Notification) (int, error) {
+	payload, err := json.Marshal(n)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := webpush.SendNotification(payload, &webpush.Subscription{
+		Endpoint: sub.Endpoint,
+		Keys: webpush.Keys{
+			P256dh: sub.P256dh,
+			Auth:   sub.Auth,
+		},
+	}, &webpush.Options{
+		Subscriber:      s.v.Subject,
+		VAPIDPublicKey:  s.v.Public,
+		VAPIDPrivateKey: s.v.Private,
+		TTL:             86400,
+		Urgency:         webpush.UrgencyHigh,
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
