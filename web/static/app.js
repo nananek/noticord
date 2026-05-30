@@ -9,6 +9,9 @@ const state = {
   authRequired: false,
   unread: {},      // channelId -> 未読件数
   es: null,        // EventSource
+  // ?debug=1 か localStorage.debug=1 でクライアント側 SSE ログを有効化。
+  debug: new URL(location.href).searchParams.get('debug') === '1' ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('debug') === '1'),
 };
 
 // ---- 汎用 ----
@@ -92,6 +95,7 @@ async function login() {
   else { $('loginError').textContent = 'パスワードが違います'; }
 }
 async function logout() {
+  disconnectSSE(); // 認証切れ後に繋ぎっぱなしにしない
   await api('/api/logout', { method: 'POST' });
   showLogin();
 }
@@ -505,11 +509,14 @@ function connectSSE() {
   const es = new EventSource('/api/events', { withCredentials: true });
   state.es = es;
 
+  es.addEventListener('ready', () => sseLog('open'));
+
   es.addEventListener('message', (e) => {
     let ev;
     try { ev = JSON.parse(e.data); } catch (_) { return; }
     const m = ev && ev.data;
     if (!m || !ev.channel_id) return;
+    sseLog('message', ev.type, ev.channel_id);
     if (ev.channel_id === state.current) {
       appendMessage(m);
     } else {
@@ -521,6 +528,7 @@ function connectSSE() {
   // 認証切れ等で切断されたら EventSource が自動再接続する。
   // ただし 401 は再接続が無限ループになり得るので、その時はログイン画面へ。
   es.onerror = () => {
+    sseLog('error', es.readyState);
     if (es.readyState === EventSource.CLOSED) {
       // サーバーが接続を閉じた(認証切れの可能性)。状態を確認して必要なら再ログイン。
       fetch('/api/me', { credentials: 'same-origin' })
@@ -530,6 +538,15 @@ function connectSSE() {
     }
     // それ以外(transient)はブラウザが自動再接続するので何もしない。
   };
+}
+
+function disconnectSSE() {
+  if (state.es) { state.es.close(); state.es = null; sseLog('closed'); }
+}
+
+// sseLog はデバッグ用。?debug=1 か localStorage.debug=1 のとき console に出す。
+function sseLog(...args) {
+  if (state.debug) console.log('[sse]', ...args);
 }
 
 // ---- 初期化 ----
@@ -544,6 +561,7 @@ async function init() {
   // URL の ?c= を初期選択に
   const c = new URL(location.href).searchParams.get('c');
   await loadChannels(c || null);
+  connectSSE(); // 開いている画面へのリアルタイム配信を開始
 }
 
 function wire() {
