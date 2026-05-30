@@ -125,6 +125,25 @@
     .wh { border-top:1px solid var(--line); padding:10px 0; }
     .wh:first-of-type { border-top:none; }
 
+    /* 通知設定ボトムシート(下から出る) */
+    .sheet-bg { align-items:flex-end; }
+    .sheet { background:var(--panel); border:1px solid var(--line); border-bottom:none;
+      border-radius:14px 14px 0 0; padding:18px; padding-bottom:calc(18px + env(safe-area-inset-bottom));
+      width:100%; max-width:560px; animation:sheet-up .22s ease; }
+    @keyframes sheet-up { from { transform:translateY(100%); } to { transform:translateY(0); } }
+    .sheet-head { display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+    .sheet-head h2 { font-size:16px; margin:0; }
+    /* トグルスイッチ */
+    .switch-row { display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:12px 2px; cursor:pointer; }
+    .switch { appearance:none; -webkit-appearance:none; flex:none; width:46px; height:26px; margin:0;
+      border-radius:999px; background:var(--panel2); border:1px solid #2c3650; position:relative;
+      cursor:pointer; transition:background .15s, border-color .15s; }
+    .switch::after { content:""; position:absolute; top:2px; left:2px; width:20px; height:20px;
+      border-radius:50%; background:var(--muted); transition:transform .15s, background .15s; }
+    .switch:checked { background:var(--accent); border-color:var(--accent); }
+    .switch:checked::after { transform:translateX(20px); background:#fff; }
+
     /* トースト */
     .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid #2c3650; padding:10px 16px; border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:60; white-space:pre-line; max-width:90vw; font-size:13px; }
     .toast.show { opacity:1; }
@@ -148,9 +167,9 @@
     <div class="card">
       <h1><img src="/icon.svg" alt="">noticord</h1>
       <div class="field">
-        <input id="password" type="password" placeholder="パスワード" autocomplete="current-password">
+        <input id="password" type="password" placeholder="パスワード" autocomplete="current-password" data-i18n-ph="login.password_ph">
       </div>
-      <button id="loginBtn" style="width:100%">ログイン</button>
+      <button id="loginBtn" style="width:100%" data-i18n="login.button">ログイン</button>
       <p id="loginError" class="muted"></p>
     </div>
   </div>
@@ -164,26 +183,20 @@
       <div class="brand">
         <img src="/icon.svg" alt="">
         <h1 class="grow">noticord</h1>
-        <span id="notifDot" class="status off">通知</span>
+        <span id="notifDot" class="status off" data-i18n="notif.label">通知</span>
       </div>
       <div class="channels">
         <div class="section-label">
-          <span class="grow">チャンネル</span>
-          <button id="addChannelBtn" class="ghost" style="padding:2px 8px" title="チャンネルを追加">＋</button>
+          <span class="grow" data-i18n="sidebar.channels">チャンネル</span>
+          <button id="addChannelBtn" class="ghost" style="padding:2px 8px" title="チャンネルを追加" data-i18n-title="sidebar.add_channel">＋</button>
         </div>
         <div id="channelList"></div>
       </div>
       <div class="foot">
-        <div id="pushGuide" class="push-guide hidden"></div>
-        <div class="row">
-          <button id="enableBtn" class="secondary grow">通知を有効化</button>
-          <button id="soundBtn" class="ghost" title="通知音">🔔</button>
-          <button id="testBtn" class="ghost" title="テスト通知を送信">✈️</button>
-          <button id="disableBtn" class="ghost hidden" title="通知を無効化">🚫</button>
-        </div>
+        <button id="notifSettingsBtn" class="secondary grow">🔔 <span data-i18n="notif.settings">通知設定</span></button>
         <div class="row">
           <span class="muted grow" id="footNote"></span>
-          <button id="logoutBtn" class="ghost hidden">ログアウト</button>
+          <button id="logoutBtn" class="ghost hidden" data-i18n="logout">ログアウト</button>
         </div>
       </div>
     </aside>
@@ -191,14 +204,14 @@
     <!-- メイン -->
     <main class="main">
       <div class="header">
-        <button id="menuBtn" class="ghost mobile-only" title="チャンネル">☰</button>
+        <button id="menuBtn" class="ghost mobile-only" title="チャンネル" data-i18n-title="header.menu">☰</button>
         <span class="title"><span class="hash" style="opacity:.5">#</span><span id="curChannelName">—</span></span>
         <span id="curTopic" class="topic"></span>
         <span class="grow"></span>
-        <button id="settingsBtn" class="ghost" title="チャンネル設定">⚙</button>
+        <button id="settingsBtn" class="ghost" title="チャンネル設定" data-i18n-title="header.settings">⚙</button>
       </div>
       <div id="timeline" class="timeline">
-        <p class="center">チャンネルを選択してください</p>
+        <p class="center" data-i18n="timeline.select_channel">チャンネルを選択してください</p>
       </div>
     </main>
   </div>
@@ -206,18 +219,18 @@
   <!-- チャンネル追加モーダル -->
   <div id="addChannelModal" class="modal-bg hidden">
     <div class="modal">
-      <h2>チャンネルを追加</h2>
+      <h2 data-i18n="addch.title">チャンネルを追加</h2>
       <div class="field">
-        <label>チャンネル名(小文字・記号は - に変換されます)</label>
+        <label data-i18n="addch.name_label">チャンネル名(小文字・記号は - に変換されます)</label>
         <input id="newChannelName" placeholder="alerts">
       </div>
       <div class="field">
-        <label>トピック(任意)</label>
-        <input id="newChannelTopic" placeholder="サーバー監視アラート">
+        <label data-i18n="addch.topic_label">トピック(任意)</label>
+        <input id="newChannelTopic" placeholder="サーバー監視アラート" data-i18n-ph="addch.topic_ph">
       </div>
       <div class="row" style="justify-content:flex-end">
-        <button class="ghost" data-close-modal>キャンセル</button>
-        <button id="createChannelBtn">作成</button>
+        <button class="ghost" data-close-modal data-i18n="common.cancel">キャンセル</button>
+        <button id="createChannelBtn" data-i18n="common.create">作成</button>
       </div>
     </div>
   </div>
@@ -225,13 +238,13 @@
   <!-- チャンネル作成完了モーダル(自動発行された Webhook URL を即表示) -->
   <div id="createdModal" class="modal-bg hidden">
     <div class="modal">
-      <h2>#<span id="createdChName"></span> を作成しました</h2>
-      <p class="muted">このチャンネル宛の Webhook URL を発行しました。送信元サービスの Discord Webhook 先に貼り付けてください。</p>
+      <h2 id="createdTitle"></h2>
+      <p class="muted" data-i18n="created.desc">このチャンネル宛の Webhook URL を発行しました。送信元サービスの Discord Webhook 先に貼り付けてください。</p>
       <div class="url" id="createdUrl"></div>
       <div class="row">
-        <button id="createdCopyBtn">URL をコピー</button>
+        <button id="createdCopyBtn" data-i18n="created.copy">URL をコピー</button>
         <span class="grow"></span>
-        <button class="ghost" data-close-modal>閉じる</button>
+        <button class="ghost" data-close-modal data-i18n="common.close">閉じる</button>
       </div>
     </div>
   </div>
@@ -239,33 +252,55 @@
   <!-- チャンネル設定モーダル -->
   <div id="settingsModal" class="modal-bg hidden">
     <div class="modal">
-      <h2>チャンネル設定: #<span id="setChName"></span></h2>
+      <h2 id="setTitle"></h2>
       <div class="field">
-        <label>チャンネル名</label>
+        <label data-i18n="settings.name_label">チャンネル名</label>
         <input id="setName">
       </div>
       <div class="field">
-        <label>トピック</label>
+        <label data-i18n="settings.topic_label">トピック</label>
         <input id="setTopic">
       </div>
       <div class="row" style="margin-bottom:18px">
-        <button id="saveChannelBtn">保存</button>
+        <button id="saveChannelBtn" data-i18n="common.save">保存</button>
         <span class="grow"></span>
-        <button id="deleteChannelBtn" class="danger">チャンネルを削除</button>
+        <button id="deleteChannelBtn" class="danger" data-i18n="settings.delete_channel">チャンネルを削除</button>
       </div>
 
       <h2>Webhook URL</h2>
-      <p class="muted">このチャンネルに届くDiscord互換URLです。送信元サービスのWebhook先に貼り付けてください。</p>
+      <p class="muted" data-i18n="settings.webhook_desc">このチャンネルに届くDiscord互換URLです。送信元サービスのWebhook先に貼り付けてください。</p>
       <div class="row" style="margin-bottom:8px">
-        <input id="newWebhookName" class="grow" placeholder="用途名 (例: Grafana)">
-        <button id="createWebhookBtn">発行</button>
+        <input id="newWebhookName" class="grow" placeholder="用途名 (例: Grafana)" data-i18n-ph="settings.webhook_name_ph">
+        <button id="createWebhookBtn" data-i18n="settings.webhook_create">発行</button>
       </div>
       <div id="webhookList"></div>
 
       <div class="row" style="margin-top:18px; justify-content:space-between">
-        <button id="clearMessagesBtn" class="danger">このチャンネルの履歴を全削除</button>
-        <button class="ghost" data-close-modal>閉じる</button>
+        <button id="clearMessagesBtn" class="danger" data-i18n="settings.clear_history">このチャンネルの履歴を全削除</button>
+        <button class="ghost" data-close-modal data-i18n="common.close">閉じる</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 通知設定(下から出るボトムシート) -->
+  <div id="notifSheet" class="modal-bg sheet-bg hidden">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2 data-i18n="notif.settings">通知設定</h2>
+        <span id="notifDotSheet" class="status off" data-i18n="notif.label">通知</span>
+        <span class="grow"></span>
+        <button class="ghost" data-close-modal data-i18n="common.close">閉じる</button>
+      </div>
+      <div id="pushGuide" class="push-guide hidden"></div>
+      <div class="row" style="margin:12px 0">
+        <button id="enableBtn" class="secondary grow" data-i18n="notif.enable">通知を有効化</button>
+        <button id="disableBtn" class="secondary grow hidden" data-i18n="notif.disable">通知を無効化</button>
+        <button id="testBtn" class="ghost" title="テスト通知を送信" data-i18n-title="notif.test">✈️ <span data-i18n="notif.test_label">テスト</span></button>
+      </div>
+      <label class="switch-row" for="soundToggle">
+        <span>📢 <span data-i18n="notif.sound">通知音</span></span>
+        <input type="checkbox" id="soundToggle" class="switch">
+      </label>
     </div>
   </div>
 

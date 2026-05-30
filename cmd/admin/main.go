@@ -221,6 +221,7 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authed":        s.isAuthed(r),
 		"auth_required": s.authEnabled(),
+		"lang":          s.cfg.Lang,
 	})
 }
 

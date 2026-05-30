@@ -24,6 +24,7 @@ type Admin struct {
 	PublicURL    string // cloudflared で公開する webhook のベース URL
 	KeepMessages int    // 履歴の最大保持件数(0で無制限)
 	Debug        bool   // 受信・プッシュ送信の詳細ログを出すか(NOTICORD_DEBUG)
+	Lang         string // UI 言語 "en"/"ja"(NOTICORD_LANG。未知の値は en へ倒す)
 }
 
 func LoadAdmin() Admin {
@@ -36,6 +37,17 @@ func LoadAdmin() Admin {
 		PublicURL:    strings.TrimRight(Env("NOTICORD_PUBLIC_URL", ""), "/"),
 		KeepMessages: 1000,
 		Debug:        Truthy(Env("NOTICORD_DEBUG", "")),
+		Lang:         NormalizeLang(Env("NOTICORD_LANG", "en")),
+	}
+}
+
+// NormalizeLang は対応言語(en/ja)に丸める。未対応の値はすべて en。
+func NormalizeLang(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "ja", "ja-jp", "jp", "japanese":
+		return "ja"
+	default:
+		return "en"
 	}
 }
 
