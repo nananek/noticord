@@ -1,6 +1,6 @@
 // Package ingest は Discord 互換 Webhook の受信処理(トークン検証・履歴保存・
-// Web Push 送信)を提供する。admin プロセスが UDS 経由でこのハンドラを公開し、
-// 受け口の webhook プロセスはここへ素通しで転送するだけにする。
+// Web Push 送信)を提供する。admin プロセスが UDS でこのハンドラを公開し、
+// cloudflared はここへ素通しで到達する。
 package ingest
 
 import (
@@ -53,10 +53,11 @@ func (h *Handler) info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":    t.ID,
-		"type":  1,
-		"name":  firstNonEmpty(t.Name, "noticord"),
-		"token": t.Token,
+		"id":         t.ID,
+		"type":       1,
+		"name":       firstNonEmpty(t.Name, "noticord"),
+		"channel_id": t.ChannelID,
+		"token":      t.Token,
 	})
 }
 
@@ -73,7 +74,18 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	title, body := payload.Notification(firstNonEmpty(t.Name, "noticord"))
+	// 送信者名(embed の要約も含む)と本文を組み立てる。
+	username, body := payload.Notification(firstNonEmpty(t.Name, "noticord"))
+
+	// チャンネル名を解決し、通知タイトルに前置して「どのチャンネルか」を示す。
+	chName := ""
+	if ch, _ := db.GetChannel(h.DB, t.ChannelID); ch != nil {
+		chName = ch.Name
+	}
+	notifTitle := username
+	if chName != "" {
+		notifTitle = "#" + chName + " · " + username
+	}
 
 	embedsJSON := "[]"
 	if len(payload.Embeds) > 0 {
@@ -84,7 +96,9 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 
 	msgID, err := db.AddMessage(h.DB, db.Message{
 		TokenID:   t.ID,
-		Username:  title,
+		ChannelID: t.ChannelID,
+		Username:  username,
+		Avatar:    strings.TrimSpace(payload.AvatarURL),
 		Content:   payload.Content,
 		Embeds:    embedsJSON,
 		Raw:       raw,
@@ -98,13 +112,20 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		_ = db.PruneMessages(h.DB, h.KeepMessages)
 	}
 
-	h.fanout(push.Notification{Title: title, Body: body, URL: "/", Tag: "noticord"})
+	// 通知クリックで該当チャンネルを開けるよう URL にチャンネル ID を載せる。
+	h.fanout(push.Notification{
+		Title: notifTitle,
+		Body:  body,
+		URL:   "/?c=" + t.ChannelID,
+		Tag:   "noticord-" + t.ChannelID,
+	})
 
 	if r.URL.Query().Get("wait") == "true" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":         msgID,
 			"type":       0,
 			"content":    payload.Content,
+			"channel_id": t.ChannelID,
 			"timestamp":  time.Now().UTC().Format(time.RFC3339),
 			"webhook_id": t.ID,
 		})

@@ -62,12 +62,20 @@ func main() {
 	mux.Handle("GET /api/vapid-public-key", s.protect(s.vapidKey))
 	mux.Handle("POST /api/subscribe", s.protect(s.subscribe))
 	mux.Handle("POST /api/unsubscribe", s.protect(s.unsubscribe))
-	mux.Handle("GET /api/tokens", s.protect(s.listTokens))
-	mux.Handle("POST /api/tokens", s.protect(s.createToken))
+
+	// チャンネル
+	mux.Handle("GET /api/channels", s.protect(s.listChannels))
+	mux.Handle("POST /api/channels", s.protect(s.createChannel))
+	mux.Handle("PATCH /api/channels/{id}", s.protect(s.updateChannel))
+	mux.Handle("DELETE /api/channels/{id}", s.protect(s.deleteChannel))
+	mux.Handle("GET /api/channels/{id}/webhooks", s.protect(s.listChannelWebhooks))
+	mux.Handle("POST /api/channels/{id}/webhooks", s.protect(s.createChannelWebhook))
+	mux.Handle("GET /api/channels/{id}/messages", s.protect(s.listChannelMessages))
+	mux.Handle("POST /api/channels/{id}/messages/clear", s.protect(s.clearChannelMessages))
+
+	// Webhook / メッセージ単体操作
 	mux.Handle("DELETE /api/tokens/{id}", s.protect(s.deleteToken))
-	mux.Handle("GET /api/messages", s.protect(s.listMessages))
 	mux.Handle("DELETE /api/messages/{id}", s.protect(s.deleteMessage))
-	mux.Handle("POST /api/messages/clear", s.protect(s.clearMessages))
 	mux.Handle("POST /api/test", s.protect(s.testPush))
 
 	// PWA 静的ファイル
@@ -269,8 +277,101 @@ func (s *server) toView(t db.Token) tokenView {
 	}
 }
 
-func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
-	ts, err := db.ListTokens(s.db)
+// ---- チャンネル ----
+
+func (s *server) listChannels(w http.ResponseWriter, r *http.Request) {
+	cs, err := db.ListChannels(s.db)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if cs == nil {
+		cs = []db.Channel{}
+	}
+	writeJSON(w, http.StatusOK, cs)
+}
+
+func (s *server) createChannel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name  string `json:"name"`
+		Topic string `json:"topic"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	name := normalizeChannelName(body.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "チャンネル名を入力してください"})
+		return
+	}
+	c, err := db.CreateChannel(s.db, name, strings.TrimSpace(body.Topic))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *server) updateChannel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ch, err := db.GetChannel(s.db, id)
+	if err != nil || ch == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "channel not found"})
+		return
+	}
+	var body struct {
+		Name  string `json:"name"`
+		Topic string `json:"topic"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	name := normalizeChannelName(body.Name)
+	if name == "" {
+		name = ch.Name
+	}
+	if err := db.UpdateChannel(s.db, id, name, strings.TrimSpace(body.Topic)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	c, _ := db.GetChannel(s.db, id)
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *server) deleteChannel(w http.ResponseWriter, r *http.Request) {
+	// 常に最低1チャンネルは残す。
+	n, err := db.CountChannels(s.db)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if n <= 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "最後のチャンネルは削除できません"})
+		return
+	}
+	if err := db.DeleteChannel(s.db, r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// normalizeChannelName は Discord 風に小文字化し、空白を - に、許可外文字を除去する。
+func normalizeChannelName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "#")
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// ---- Webhook(チャンネル配下) ----
+
+func (s *server) listChannelWebhooks(w http.ResponseWriter, r *http.Request) {
+	ts, err := db.ListTokensByChannel(s.db, r.PathValue("id"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -282,12 +383,18 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
+func (s *server) createChannelWebhook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ch, err := db.GetChannel(s.db, id)
+	if err != nil || ch == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "channel not found"})
+		return
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	t, err := db.CreateToken(s.db, strings.TrimSpace(body.Name))
+	t, err := db.CreateToken(s.db, id, strings.TrimSpace(body.Name))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -305,9 +412,9 @@ func (s *server) deleteToken(w http.ResponseWriter, r *http.Request) {
 
 // ---- 履歴 ----
 
-func (s *server) listMessages(w http.ResponseWriter, r *http.Request) {
+func (s *server) listChannelMessages(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	ms, err := db.ListMessages(s.db, limit)
+	ms, err := db.ListMessagesByChannel(s.db, r.PathValue("id"), limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -331,8 +438,8 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *server) clearMessages(w http.ResponseWriter, r *http.Request) {
-	if err := db.ClearMessages(s.db); err != nil {
+func (s *server) clearChannelMessages(w http.ResponseWriter, r *http.Request) {
+	if err := db.ClearMessagesByChannel(s.db, r.PathValue("id")); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

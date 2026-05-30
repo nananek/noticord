@@ -9,39 +9,79 @@
   <link rel="apple-touch-icon" href="/icon.svg">
   <meta name="theme-color" content="#0b0f17">
   <style>
-    :root { --bg:#0b0f17; --panel:#141a26; --panel2:#1b2333; --fg:#e6ebf5; --muted:#8a96ad; --accent:#5b8cff; --danger:#ff6b6b; --ok:#46d39a; }
+    :root {
+      --bg:#0b0f17; --sidebar:#0e1320; --panel:#141a26; --panel2:#1b2333;
+      --fg:#e6ebf5; --muted:#8a96ad; --accent:#5b8cff; --danger:#ff6b6b; --ok:#46d39a;
+      --line:#232b3d;
+    }
     * { box-sizing: border-box; }
-    body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; line-height:1.6; }
-    header { padding:18px 16px; display:flex; align-items:center; gap:10px; border-bottom:1px solid #232b3d; position:sticky; top:0; background:var(--bg); }
-    header img { width:30px; height:30px; }
-    header h1 { font-size:20px; margin:0; }
-    header .spacer { flex:1; }
-    main { max-width:760px; margin:0 auto; padding:16px; }
-    section { background:var(--panel); border:1px solid #232b3d; border-radius:14px; padding:16px; margin-bottom:16px; }
-    h2 { font-size:15px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-    button { font:inherit; border:none; border-radius:10px; padding:9px 14px; background:var(--accent); color:#fff; cursor:pointer; }
+    html, body { height:100%; }
+    body { margin:0; background:var(--bg); color:var(--fg);
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
+      line-height:1.6; }
+    button { font:inherit; border:none; border-radius:8px; padding:8px 12px; background:var(--accent); color:#fff; cursor:pointer; }
     button.secondary { background:var(--panel2); color:var(--fg); border:1px solid #2c3650; }
+    button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
     button.danger { background:transparent; color:var(--danger); border:1px solid #3a2730; }
     button:disabled { opacity:.5; cursor:default; }
-    input { font:inherit; background:var(--panel2); border:1px solid #2c3650; color:var(--fg); border-radius:10px; padding:9px 12px; width:100%; }
-    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .grow { flex:1; min-width:160px; }
+    input, textarea { font:inherit; background:var(--panel2); border:1px solid #2c3650; color:var(--fg); border-radius:8px; padding:8px 10px; width:100%; }
+    a { color:var(--accent); }
+    .hidden { display:none !important; }
     .muted { color:var(--muted); font-size:13px; }
-    .status { font-size:13px; padding:4px 10px; border-radius:999px; background:var(--panel2); }
+    .row { display:flex; gap:8px; align-items:center; }
+    .grow { flex:1; min-width:0; }
+
+    /* ---- ログイン ---- */
+    #loginScreen { display:flex; align-items:center; justify-content:center; height:100%; }
+    #loginScreen .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:24px; width:320px; max-width:90vw; }
+    #loginScreen h1 { font-size:20px; margin:0 0 16px; display:flex; gap:10px; align-items:center; }
+    #loginScreen img { width:28px; height:28px; }
+
+    /* ---- アプリ本体: 2ペイン ---- */
+    #app { display:grid; grid-template-columns:260px 1fr; height:100%; }
+
+    /* サイドバー */
+    .sidebar { background:var(--sidebar); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+    .sidebar .brand { padding:14px 16px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--line); }
+    .sidebar .brand img { width:26px; height:26px; }
+    .sidebar .brand h1 { font-size:17px; margin:0; }
+    .sidebar .channels { flex:1; overflow-y:auto; padding:8px; }
+    .sidebar .section-label { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:8px 8px 4px; display:flex; align-items:center; }
+    .channel-item { display:flex; align-items:center; gap:6px; padding:7px 8px; border-radius:6px; cursor:pointer; color:var(--muted); }
+    .channel-item:hover { background:#ffffff0d; color:var(--fg); }
+    .channel-item.active { background:#ffffff14; color:#fff; }
+    .channel-item .hash { opacity:.6; font-weight:600; }
+    .channel-item .cname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .channel-item .badge { font-size:11px; background:var(--accent); color:#fff; border-radius:999px; padding:0 6px; min-width:18px; text-align:center; }
+    .sidebar .foot { border-top:1px solid var(--line); padding:10px; display:flex; flex-direction:column; gap:8px; }
+    .sidebar .foot .row { flex-wrap:wrap; }
+    .status { font-size:12px; padding:3px 8px; border-radius:999px; background:var(--panel2); }
     .status.ok { color:var(--ok); }
     .status.off { color:var(--muted); }
-    .token { border-top:1px solid #232b3d; padding:12px 0; }
-    .token:first-of-type { border-top:none; }
-    .url { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; background:var(--bg); border:1px solid #232b3d; border-radius:8px; padding:8px; word-break:break-all; margin:6px 0; }
-    .msg { border-top:1px solid #232b3d; padding:12px 0; }
-    .msg:first-of-type { border-top:none; }
-    .msg .title { font-weight:600; }
-    .msg .time { color:var(--muted); font-size:12px; }
-    .msg .body { word-break:break-word; margin-top:4px; }
-    .msg .body a, .embed a { color:var(--accent); }
-    .msg code, .embed code { background:#0008; padding:1px 5px; border-radius:4px; font-family:ui-monospace,Menlo,monospace; font-size:.9em; }
-    /* Discord 風 embed カード */
-    .embed { background:var(--panel2); border-left:4px solid #4f545c; border-radius:4px; padding:10px 12px; margin-top:8px; max-width:520px; }
+
+    /* メイン */
+    .main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+    .main .header { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); }
+    .main .header .title { font-weight:700; font-size:16px; display:flex; align-items:center; gap:4px; }
+    .main .header .topic { color:var(--muted); font-size:13px; border-left:1px solid var(--line); padding-left:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .timeline { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:2px; }
+
+    /* メッセージ行(Discord風) */
+    .message-row { display:flex; gap:12px; padding:8px 8px; border-radius:6px; }
+    .message-row:hover { background:#ffffff08; }
+    .message-row .avatar { width:40px; height:40px; border-radius:50%; flex:none; background:var(--panel2); display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; overflow:hidden; }
+    .message-row .avatar img { width:100%; height:100%; object-fit:cover; }
+    .message-row .body { flex:1; min-width:0; }
+    .message-row .meta { display:flex; align-items:baseline; gap:8px; }
+    .message-row .author { font-weight:600; }
+    .message-row .time { color:var(--muted); font-size:12px; }
+    .message-row .del { margin-left:auto; visibility:hidden; }
+    .message-row:hover .del { visibility:visible; }
+    .message-row .text { word-break:break-word; }
+    .message-row code { background:#0008; padding:1px 5px; border-radius:4px; font-family:ui-monospace,Menlo,monospace; font-size:.9em; }
+
+    /* embed カード */
+    .embed { background:var(--panel2); border-left:4px solid #4f545c; border-radius:4px; padding:10px 12px; margin-top:6px; max-width:520px; }
     .embed-grid { display:flex; gap:12px; }
     .embed-main { flex:1; min-width:0; }
     .embed-author { display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600; margin-bottom:4px; }
@@ -57,74 +97,141 @@
     .embed-thumb { width:72px; height:72px; object-fit:cover; border-radius:6px; flex:none; }
     .embed-footer { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin-top:8px; }
     .embed-footer-icon { width:18px; height:18px; border-radius:50%; }
-    .hidden { display:none; }
-    .center { text-align:center; padding:24px 0; }
-    .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid #2c3650; padding:10px 16px; border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none; }
+
+    .center { text-align:center; color:var(--muted); padding:40px 0; }
+
+    /* モーダル */
+    .modal-bg { position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; padding:16px; z-index:50; }
+    .modal { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px; width:520px; max-width:95vw; max-height:90vh; overflow-y:auto; }
+    .modal h2 { font-size:16px; margin:0 0 14px; }
+    .modal .field { margin-bottom:12px; }
+    .modal .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .url { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; word-break:break-all; margin:6px 0; }
+    .wh { border-top:1px solid var(--line); padding:10px 0; }
+    .wh:first-of-type { border-top:none; }
+
+    /* トースト */
+    .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid #2c3650; padding:10px 16px; border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:60; }
     .toast.show { opacity:1; }
+
+    /* モバイル: サイドバーをドロワー化 */
+    .mobile-only { display:none; }
+    @media (max-width:720px) {
+      #app { grid-template-columns:1fr; }
+      .sidebar { position:fixed; inset:0 40% 0 0; z-index:40; transform:translateX(-100%); transition:transform .2s; }
+      #app.drawer-open .sidebar { transform:translateX(0); }
+      .mobile-only { display:inline-flex; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <img src="/icon.svg" alt="">
-    <h1>noticord</h1>
-    <span class="spacer"></span>
-    <span id="notifStatus" class="status off">通知: 未設定</span>
-  </header>
-
-  <main>
-    <!-- ログイン -->
-    <section id="loginSection" class="hidden">
-      <h2>ログイン</h2>
-      <div class="row">
-        <input id="password" class="grow" type="password" placeholder="パスワード" autocomplete="current-password">
-        <button id="loginBtn">ログイン</button>
+  <!-- ログイン -->
+  <div id="loginScreen" class="hidden">
+    <div class="card">
+      <h1><img src="/icon.svg" alt="">noticord</h1>
+      <div class="field">
+        <input id="password" type="password" placeholder="パスワード" autocomplete="current-password">
       </div>
+      <button id="loginBtn" style="width:100%">ログイン</button>
       <p id="loginError" class="muted"></p>
-    </section>
-
-    <div id="app" class="hidden">
-      <!-- 通知設定 -->
-      <section>
-        <h2>通知の受け取り</h2>
-        <p class="muted">このデバイスでプッシュ通知を受け取るには有効化してください。PWAとしてホーム画面に追加すると、アプリを閉じていても届きます。</p>
-        <div class="row">
-          <button id="enableBtn">このデバイスで通知を有効化</button>
-          <button id="testBtn" class="secondary">テスト通知</button>
-          <button id="disableBtn" class="danger hidden">無効化</button>
-        </div>
-      </section>
-
-      <!-- Webhook URL -->
-      <section>
-        <h2>Webhook URL</h2>
-        <p class="muted">Discord互換のURLを払い出します。各種サービスのDiscord Webhook送信先に貼り付けてください。</p>
-        <div class="row">
-          <input id="tokenName" class="grow" placeholder="用途名 (例: UptimeKuma)">
-          <button id="createTokenBtn">URLを発行</button>
-        </div>
-        <div id="tokens"></div>
-      </section>
-
-      <!-- 履歴 -->
-      <section>
-        <h2>受信履歴
-          <span class="spacer"></span>
-        </h2>
-        <div class="row" style="margin-bottom:8px">
-          <button id="refreshBtn" class="secondary">更新</button>
-          <button id="clearBtn" class="danger">全削除</button>
-        </div>
-        <div id="messages"><p class="center muted">読み込み中…</p></div>
-      </section>
-
-      <section>
-        <div class="row">
-          <span class="spacer"></span>
-          <button id="logoutBtn" class="secondary hidden">ログアウト</button>
-        </div>
-      </section>
     </div>
-  </main>
+  </div>
+
+  <!-- アプリ -->
+  <div id="app" class="hidden">
+    <!-- サイドバー -->
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/icon.svg" alt="">
+        <h1 class="grow">noticord</h1>
+        <span id="notifDot" class="status off">通知</span>
+      </div>
+      <div class="channels">
+        <div class="section-label">
+          <span class="grow">チャンネル</span>
+          <button id="addChannelBtn" class="ghost" style="padding:2px 8px" title="チャンネルを追加">＋</button>
+        </div>
+        <div id="channelList"></div>
+      </div>
+      <div class="foot">
+        <div class="row">
+          <button id="enableBtn" class="secondary grow">通知を有効化</button>
+          <button id="testBtn" class="ghost" title="テスト通知">🔔</button>
+          <button id="disableBtn" class="ghost hidden" title="通知を無効化">🔕</button>
+        </div>
+        <div class="row">
+          <span class="muted grow" id="footNote"></span>
+          <button id="logoutBtn" class="ghost hidden">ログアウト</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- メイン -->
+    <main class="main">
+      <div class="header">
+        <button id="menuBtn" class="ghost mobile-only" title="チャンネル">☰</button>
+        <span class="title"><span class="hash" style="opacity:.5">#</span><span id="curChannelName">—</span></span>
+        <span id="curTopic" class="topic"></span>
+        <span class="grow"></span>
+        <button id="settingsBtn" class="ghost" title="チャンネル設定">⚙</button>
+      </div>
+      <div id="timeline" class="timeline">
+        <p class="center">チャンネルを選択してください</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- チャンネル追加モーダル -->
+  <div id="addChannelModal" class="modal-bg hidden">
+    <div class="modal">
+      <h2>チャンネルを追加</h2>
+      <div class="field">
+        <label>チャンネル名(小文字・記号は - に変換されます)</label>
+        <input id="newChannelName" placeholder="alerts">
+      </div>
+      <div class="field">
+        <label>トピック(任意)</label>
+        <input id="newChannelTopic" placeholder="サーバー監視アラート">
+      </div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="ghost" data-close-modal>キャンセル</button>
+        <button id="createChannelBtn">作成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- チャンネル設定モーダル -->
+  <div id="settingsModal" class="modal-bg hidden">
+    <div class="modal">
+      <h2>チャンネル設定: #<span id="setChName"></span></h2>
+      <div class="field">
+        <label>チャンネル名</label>
+        <input id="setName">
+      </div>
+      <div class="field">
+        <label>トピック</label>
+        <input id="setTopic">
+      </div>
+      <div class="row" style="margin-bottom:18px">
+        <button id="saveChannelBtn">保存</button>
+        <span class="grow"></span>
+        <button id="deleteChannelBtn" class="danger">チャンネルを削除</button>
+      </div>
+
+      <h2>Webhook URL</h2>
+      <p class="muted">このチャンネルに届くDiscord互換URLです。送信元サービスのWebhook先に貼り付けてください。</p>
+      <div class="row" style="margin-bottom:8px">
+        <input id="newWebhookName" class="grow" placeholder="用途名 (例: Grafana)">
+        <button id="createWebhookBtn">発行</button>
+      </div>
+      <div id="webhookList"></div>
+
+      <div class="row" style="margin-top:18px; justify-content:space-between">
+        <button id="clearMessagesBtn" class="danger">このチャンネルの履歴を全削除</button>
+        <button class="ghost" data-close-modal>閉じる</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast"></div>
   <script src="/app.js"></script>
