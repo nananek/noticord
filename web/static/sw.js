@@ -16,7 +16,7 @@ self.addEventListener('push', (event) => {
     } catch (_) { /* 取り出し失敗時もフォールバック通知を出す */ }
 
     const options = {
-      body: data.body || '新しい通知',
+      body: data.body || 'New notification',
       icon: '/icon.svg',
       badge: '/icon.svg',
       tag: data.tag || 'noticord',
@@ -29,7 +29,7 @@ self.addEventListener('push', (event) => {
       await self.registration.showNotification(data.title || 'noticord', options);
     } catch (_) {
       // 最低限のフォールバック(購読剥奪を避けるため必ず1件出す)。
-      await self.registration.showNotification('noticord', { body: '新しい通知', icon: '/icon.svg' });
+      await self.registration.showNotification('noticord', { body: 'New notification', icon: '/icon.svg' });
     }
   };
   event.waitUntil(show());

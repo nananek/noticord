@@ -2,6 +2,197 @@
 
 const $ = (id) => document.getElementById(id);
 
+// ---- i18n ----
+// サーバー(/api/me の lang)が選んだ言語で UI を切り替える。対応は en/ja のみ、既定 en。
+// 文言の一部は {name} 等のプレースホルダを持ち、tr(key, {name}) で差し込む。
+const I18N = {
+  en: {
+    'login.password_ph': 'Password',
+    'login.button': 'Log in',
+    'login.wrong': 'Wrong password',
+    'notif.label': 'Alerts',
+    'notif.enable': 'Enable notifications',
+    'notif.sound': 'Notification sound',
+    'notif.test': 'Send a test notification',
+    'notif.disable': 'Disable notifications',
+    'notif.settings': 'Notifications',
+    'notif.test_label': 'Test',
+    'notif.unsupported': 'Unsupported',
+    'notif.on': 'Alerts ON',
+    'notif.off': 'Alerts OFF',
+    'logout': 'Log out',
+    'sidebar.channels': 'Channels',
+    'sidebar.add_channel': 'Add channel',
+    'header.menu': 'Channels',
+    'header.settings': 'Channel settings',
+    'timeline.select_channel': 'Select a channel',
+    'timeline.no_channels': 'Create a channel with the "+" button',
+    'addch.title': 'Add channel',
+    'addch.name_label': 'Channel name (lowercased; symbols become -)',
+    'addch.topic_label': 'Topic (optional)',
+    'addch.topic_ph': 'Server monitoring alerts',
+    'common.cancel': 'Cancel',
+    'common.create': 'Create',
+    'common.close': 'Close',
+    'common.save': 'Save',
+    'common.delete': 'Delete',
+    'common.copy': 'Copy',
+    'created.heading': 'Created #{name}',
+    'created.desc': "A Webhook URL for this channel has been issued. Paste it into the Discord webhook target of the sending service.",
+    'created.copy': 'Copy URL',
+    'settings.heading': 'Channel settings: #{name}',
+    'settings.name_label': 'Channel name',
+    'settings.topic_label': 'Topic',
+    'settings.delete_channel': 'Delete channel',
+    'settings.webhook_desc': 'A Discord-compatible URL that delivers to this channel. Paste it into the webhook target of the sending service.',
+    'settings.webhook_name_ph': 'Purpose (e.g. Grafana)',
+    'settings.webhook_create': 'Issue',
+    'settings.clear_history': 'Delete all history in this channel',
+    'settings.no_channel': 'No channel selected',
+    'toast.copied': 'Copied',
+    'toast.copy_failed': 'Could not copy',
+    'toast.add_to_home': 'First add to the Home Screen, then open from that icon',
+    'toast.webpush_unsupported': 'This browser does not support Web Push',
+    'toast.notif_blocked': 'Notifications are blocked. Allow them in your device settings',
+    'toast.notif_denied': 'Notification permission was not granted',
+    'toast.notif_enabled': 'Notifications enabled',
+    'toast.subscribe_failed': 'Subscription failed: {msg}',
+    'toast.notif_disabled': 'Notifications disabled',
+    'toast.reorder_failed': 'Could not save the new order',
+    'toast.name_required': 'Enter a name',
+    'toast.create_failed': 'Could not create',
+    'toast.channel_created': 'Created #{name}',
+    'toast.save_failed': 'Could not save',
+    'toast.saved': 'Saved',
+    'toast.delete_failed': 'Could not delete',
+    'toast.channel_deleted': 'Channel deleted',
+    'toast.webhook_created': 'Webhook issued',
+    'push.guide_ios_pwa': '📲 On iPhone / iPad, use the share menu’s "Add to Home Screen", <b>launch from that icon</b>, and then enable notifications. They will not fire in a Safari tab.',
+    'push.guide_ios_old': '📲 This device cannot receive notifications. Update to iOS 16.4+ and launch from the icon added to the Home Screen.',
+    'push.guide_unsupported': 'This browser does not support Web Push.',
+    'push.sent': 'Sent: {sent}/{subs}{detail}',
+    'push.expired': 'expired ({status})',
+    'push.dev_apple': 'iPhone (apple)',
+    'push.dev_fcm': 'Android/Chrome (fcm)',
+    'push.dev_unknown': 'device',
+    'grip.title': 'Drag to reorder',
+    'msg.none': "No notifications yet.<br>Send to this channel's Webhook URL and they will show up here.",
+    'msg.delete': 'Delete',
+    'webhook.none': 'No webhooks yet.',
+    'webhook.last_used': 'Last used {time}',
+    'webhook.unused': 'Unused',
+    'webhook.noname': '(unnamed)',
+    'confirm.delete_channel': 'Delete #{name}?\nIts webhooks and history will all be deleted.',
+    'confirm.delete_webhook': 'Delete this webhook?',
+    'confirm.clear_history': 'Delete all history in this channel?',
+  },
+  ja: {
+    'login.password_ph': 'パスワード',
+    'login.button': 'ログイン',
+    'login.wrong': 'パスワードが違います',
+    'notif.label': '通知',
+    'notif.enable': '通知を有効化',
+    'notif.sound': '通知音',
+    'notif.test': 'テスト通知を送信',
+    'notif.disable': '通知を無効化',
+    'notif.settings': '通知設定',
+    'notif.test_label': 'テスト',
+    'notif.unsupported': '非対応',
+    'notif.on': '通知 ON',
+    'notif.off': '通知 OFF',
+    'logout': 'ログアウト',
+    'sidebar.channels': 'チャンネル',
+    'sidebar.add_channel': 'チャンネルを追加',
+    'header.menu': 'チャンネル',
+    'header.settings': 'チャンネル設定',
+    'timeline.select_channel': 'チャンネルを選択してください',
+    'timeline.no_channels': '「＋」からチャンネルを作成してください',
+    'addch.title': 'チャンネルを追加',
+    'addch.name_label': 'チャンネル名(小文字・記号は - に変換されます)',
+    'addch.topic_label': 'トピック(任意)',
+    'addch.topic_ph': 'サーバー監視アラート',
+    'common.cancel': 'キャンセル',
+    'common.create': '作成',
+    'common.close': '閉じる',
+    'common.save': '保存',
+    'common.delete': '削除',
+    'common.copy': 'コピー',
+    'created.heading': '#{name} を作成しました',
+    'created.desc': 'このチャンネル宛の Webhook URL を発行しました。送信元サービスの Discord Webhook 先に貼り付けてください。',
+    'created.copy': 'URL をコピー',
+    'settings.heading': 'チャンネル設定: #{name}',
+    'settings.name_label': 'チャンネル名',
+    'settings.topic_label': 'トピック',
+    'settings.delete_channel': 'チャンネルを削除',
+    'settings.webhook_desc': 'このチャンネルに届くDiscord互換URLです。送信元サービスのWebhook先に貼り付けてください。',
+    'settings.webhook_name_ph': '用途名 (例: Grafana)',
+    'settings.webhook_create': '発行',
+    'settings.clear_history': 'このチャンネルの履歴を全削除',
+    'settings.no_channel': 'チャンネルがありません',
+    'toast.copied': 'コピーしました',
+    'toast.copy_failed': 'コピーできませんでした',
+    'toast.add_to_home': 'まず「ホーム画面に追加」して、そのアイコンから開いてください',
+    'toast.webpush_unsupported': 'このブラウザはWeb Push非対応です',
+    'toast.notif_blocked': '通知がブロックされています。端末の設定から許可してください',
+    'toast.notif_denied': '通知が許可されませんでした',
+    'toast.notif_enabled': '通知を有効化しました',
+    'toast.subscribe_failed': '購読に失敗しました: {msg}',
+    'toast.notif_disabled': '通知を無効化しました',
+    'toast.reorder_failed': '並び替えの保存に失敗しました',
+    'toast.name_required': '名前を入力してください',
+    'toast.create_failed': '作成失敗',
+    'toast.channel_created': '#{name} を作成しました',
+    'toast.save_failed': '保存失敗',
+    'toast.saved': '保存しました',
+    'toast.delete_failed': '削除失敗',
+    'toast.channel_deleted': 'チャンネルを削除しました',
+    'toast.webhook_created': 'Webhookを発行しました',
+    'push.guide_ios_pwa': '📲 iPhone / iPad では、共有メニューの「ホーム画面に追加」で追加し、その<b>アイコンから起動</b>してから通知を有効化してください。Safari のタブでは通知が鳴りません。',
+    'push.guide_ios_old': '📲 この端末では通知に未対応です。iOS 16.4 以上にして、ホーム画面に追加したアイコンから起動してください。',
+    'push.guide_unsupported': 'このブラウザは Web Push に対応していません。',
+    'push.sent': '送信: {sent}/{subs} 件{detail}',
+    'push.expired': '失効({status})',
+    'push.dev_apple': 'iPhone(apple)',
+    'push.dev_fcm': 'Android/Chrome(fcm)',
+    'push.dev_unknown': 'device',
+    'grip.title': 'ドラッグで並び替え',
+    'msg.none': 'まだ通知はありません。<br>このチャンネルのWebhook URLに送ると、ここに表示されます。',
+    'msg.delete': '削除',
+    'webhook.none': 'まだWebhookがありません。',
+    'webhook.last_used': '最終利用 {time}',
+    'webhook.unused': '未使用',
+    'webhook.noname': '(無名)',
+    'confirm.delete_channel': '#{name} を削除しますか?\nWebhookと履歴もすべて削除されます。',
+    'confirm.delete_webhook': 'このWebhookを削除しますか?',
+    'confirm.clear_history': 'このチャンネルの履歴をすべて削除しますか?',
+  },
+};
+
+let LANG = 'en';
+
+// tr はキーを現在の言語へ訳す。未知キーは en へフォールバックし、なお無ければキー自身を返す。
+// params があれば {name} 形式のプレースホルダを置換する。
+function tr(key, params) {
+  const table = I18N[LANG] || I18N.en;
+  let s = table[key];
+  if (s == null) s = I18N.en[key];
+  if (s == null) s = key;
+  if (params) for (const k in params) s = s.split('{' + k + '}').join(params[k]);
+  return s;
+}
+
+// applyI18n は lang を確定し、静的 DOM の data-i18n 系属性をまとめて訳語に差し替える。
+function applyI18n(lang) {
+  LANG = (lang === 'ja') ? 'ja' : 'en';
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = tr(el.getAttribute('data-i18n')); });
+  document.querySelectorAll('[data-i18n-ph]').forEach((el) => { el.placeholder = tr(el.getAttribute('data-i18n-ph')); });
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = tr(el.getAttribute('data-i18n-title')); });
+}
+
+// 日付表示用ロケール(言語に追従)。
+function dateLocale() { return LANG === 'ja' ? 'ja-JP' : 'en-US'; }
+
 // ---- 状態 ----
 const state = {
   channels: [],
@@ -53,11 +244,11 @@ async function api(path, opts = {}) {
 
 function fmtTime(unix) {
   if (!unix) return '';
-  return new Date(unix * 1000).toLocaleString('ja-JP', { hour12: false });
+  return new Date(unix * 1000).toLocaleString(dateLocale(), { hour12: false });
 }
 function fmtIso(s) {
   const d = new Date(s);
-  return isNaN(d) ? s : d.toLocaleString('ja-JP', { hour12: false });
+  return isNaN(d) ? s : d.toLocaleString(dateLocale(), { hour12: false });
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -69,8 +260,8 @@ function safeUrl(u) {
   return typeof u === 'string' && /^https?:\/\//i.test(u.trim());
 }
 async function copyText(text) {
-  try { await navigator.clipboard.writeText(text); toast('コピーしました'); }
-  catch (_) { toast('コピーできませんでした'); }
+  try { await navigator.clipboard.writeText(text); toast(tr('toast.copied')); }
+  catch (_) { toast(tr('toast.copy_failed')); }
 }
 
 // ---- 簡易 Markdown ----
@@ -105,7 +296,7 @@ async function login() {
     body: JSON.stringify({ password: $('password').value }),
   });
   if (res.ok) { $('password').value = ''; await init(); }
-  else { $('loginError').textContent = 'パスワードが違います'; }
+  else { $('loginError').textContent = tr('login.wrong'); }
 }
 async function logout() {
   disconnectSSE(); // 認証切れ後に繋ぎっぱなしにしない
@@ -155,25 +346,30 @@ function updateGuidance() {
   let msg = '';
   if (isIOS() && !isStandalone()) {
     // iOS はホーム画面 PWA でしか Web Push が動かない。
-    msg = '📲 iPhone / iPad では、共有メニューの「ホーム画面に追加」で追加し、' +
-      'その<b>アイコンから起動</b>してから通知を有効化してください。Safari のタブでは通知が鳴りません。';
+    msg = tr('push.guide_ios_pwa');
   } else if (!pushSupported()) {
     if (isIOS()) {
-      msg = '📲 この端末では通知に未対応です。iOS 16.4 以上にして、' +
-        'ホーム画面に追加したアイコンから起動してください。';
+      msg = tr('push.guide_ios_old');
     } else {
-      msg = 'このブラウザは Web Push に対応していません。';
+      msg = tr('push.guide_unsupported');
     }
   }
   if (msg) { el.innerHTML = msg; el.classList.remove('hidden'); }
   else el.classList.add('hidden');
 }
 
+// ブランドバーと通知設定シートのステータスバッジを揃えて更新する。
+function setNotifStatus(textKey, cls) {
+  for (const id of ['notifDot', 'notifDotSheet']) {
+    const el = $(id);
+    if (el) { el.textContent = tr(textKey); el.className = 'status ' + cls; }
+  }
+}
+
 async function refreshNotifStatus() {
-  const dot = $('notifDot');
   updateGuidance();
   if (!pushSupported()) {
-    dot.textContent = '非対応'; dot.className = 'status off';
+    setNotifStatus('notif.unsupported', 'off');
     // iOS タブ時は「有効化」を押させて誘導を出したいので disabled にはしない。
     $('enableBtn').disabled = !isIOS();
     return;
@@ -182,11 +378,11 @@ async function refreshNotifStatus() {
   swReg = await navigator.serviceWorker.getRegistration();
   const sub = swReg ? await swReg.pushManager.getSubscription() : null;
   if (sub && Notification.permission === 'granted') {
-    dot.textContent = '通知 ON'; dot.className = 'status ok';
+    setNotifStatus('notif.on', 'ok');
     $('enableBtn').classList.add('hidden');
     $('disableBtn').classList.remove('hidden');
   } else {
-    dot.textContent = '通知 OFF'; dot.className = 'status off';
+    setNotifStatus('notif.off', 'off');
     $('enableBtn').classList.remove('hidden');
     $('disableBtn').classList.add('hidden');
   }
@@ -196,19 +392,17 @@ async function enableNotifications() {
   // iOS でタブ起動だと PushManager が無く、購読しても鳴らない。先に誘導する。
   if (isIOS() && !isStandalone()) {
     updateGuidance();
-    toast('まず「ホーム画面に追加」して、そのアイコンから開いてください');
+    toast(tr('toast.add_to_home'));
     return;
   }
   if (!pushSupported()) {
-    toast('このブラウザはWeb Push非対応です');
+    toast(tr('toast.webpush_unsupported'));
     updateGuidance();
     return;
   }
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') {
-    toast(perm === 'denied'
-      ? '通知がブロックされています。端末の設定から許可してください'
-      : '通知が許可されませんでした');
+    toast(perm === 'denied' ? tr('toast.notif_blocked') : tr('toast.notif_denied'));
     return;
   }
   swReg = await navigator.serviceWorker.register('/sw.js');
@@ -220,9 +414,9 @@ async function enableNotifications() {
       applicationServerKey: urlBase64ToUint8Array(key),
     });
     await api('/api/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
-    toast('通知を有効化しました');
+    toast(tr('toast.notif_enabled'));
   } catch (e) {
-    toast('購読に失敗しました: ' + (e && e.message ? e.message : e));
+    toast(tr('toast.subscribe_failed', { msg: (e && e.message ? e.message : e) }));
   }
   await refreshNotifStatus();
 }
@@ -234,7 +428,7 @@ async function disableNotifications() {
     await api('/api/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) });
     await sub.unsubscribe();
   }
-  toast('通知を無効化しました');
+  toast(tr('toast.notif_disabled'));
   await refreshNotifStatus();
 }
 
@@ -244,14 +438,14 @@ async function testPush() {
   let detail = '';
   if (Array.isArray(d.results) && d.results.length) {
     detail = '\n' + d.results.map((r) => {
-      const where = (r.host || '').includes('apple') ? 'iPhone(apple)'
-        : (r.host || '').includes('google') ? 'Android/Chrome(fcm)'
-        : (r.host || 'device');
-      const st = r.error ? `ERR ${r.error}` : (r.pruned ? `失効(${r.status})` : `OK ${r.status}`);
+      const where = (r.host || '').includes('apple') ? tr('push.dev_apple')
+        : (r.host || '').includes('google') ? tr('push.dev_fcm')
+        : (r.host || tr('push.dev_unknown'));
+      const st = r.error ? `ERR ${r.error}` : (r.pruned ? tr('push.expired', { status: r.status }) : `OK ${r.status}`);
       return `・${where}: ${st}`;
     }).join('\n');
   }
-  toast(`送信: ${d.sent}/${d.subscriptions} 件${detail}`);
+  toast(tr('push.sent', { sent: d.sent, subs: d.subscriptions, detail }));
 }
 
 // ---- チャンネル ----
@@ -278,7 +472,7 @@ function renderChannelList() {
     const n = state.unread[c.id] || 0;
     const badge = n > 0 ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : '';
     div.innerHTML = `
-      <span class="grip" title="ドラッグで並び替え">⠿</span>
+      <span class="grip" title="${escapeAttr(tr('grip.title'))}">⠿</span>
       <span class="hash">#</span>
       <span class="cname">${escapeHtml(c.name)}</span>${badge}`;
     div.onclick = () => { selectChannel(c.id); $('app').classList.remove('drawer-open'); };
@@ -333,7 +527,7 @@ async function reorderChannel(srcId, dstId, before) {
   try {
     await api('/api/channels/reorder', { method: 'POST', body: JSON.stringify({ order: ids }) });
   } catch (_) {
-    toast('並び替えの保存に失敗しました');
+    toast(tr('toast.reorder_failed'));
     await loadChannels(state.current);
   }
 }
@@ -341,7 +535,7 @@ async function reorderChannel(srcId, dstId, before) {
 function renderEmptyMain() {
   $('curChannelName').textContent = '—';
   $('curTopic').textContent = '';
-  $('timeline').innerHTML = '<p class="center">「＋」からチャンネルを作成してください</p>';
+  $('timeline').innerHTML = `<p class="center">${escapeHtml(tr('timeline.no_channels'))}</p>`;
 }
 
 async function selectChannel(id) {
@@ -362,26 +556,24 @@ async function selectChannel(id) {
 
 async function createChannel() {
   const name = $('newChannelName').value;
-  if (!name.trim()) { toast('名前を入力してください'); return; }
+  if (!name.trim()) { toast(tr('toast.name_required')); return; }
   const res = await api('/api/channels', { method: 'POST', body: JSON.stringify({
     name, topic: $('newChannelTopic').value,
   }) });
-  if (!res.ok) { const e = await res.json(); toast(e.error || '作成失敗'); return; }
+  if (!res.ok) { const e = await res.json(); toast(e.error || tr('toast.create_failed')); return; }
   const { channel: c, webhook } = await res.json();
   $('newChannelName').value = ''; $('newChannelTopic').value = '';
   closeModals();
   await loadChannels(c.id);
   // Webhook 専用コンセプト: 自動発行された URL をその場で提示して即コピーできるように。
   if (webhook && webhook.url) {
-    $('createdChName').textContent = c.name;
+    $('createdTitle').textContent = tr('created.heading', { name: c.name });
     $('createdUrl').textContent = webhook.url;
     $('createdCopyBtn').onclick = () => copyText(webhook.url);
     openModal('createdModal');
   } else {
-    toast(`#${c.name} を作成しました`);
+    toast(tr('toast.channel_created', { name: c.name }));
   }
-  return;
-  toast(`#${c.name} を作成しました`);
 }
 
 // ---- メッセージ ----
@@ -400,7 +592,7 @@ async function loadMessages() {
   const el = $('timeline');
   el.innerHTML = '';
   if (!msgs.length) {
-    el.innerHTML = '<p class="center">まだ通知はありません。<br>このチャンネルのWebhook URLに送ると、ここに表示されます。</p>';
+    el.innerHTML = `<p class="center">${tr('msg.none')}</p>`;
     state.lastRead[cid] = 0; saveLastRead();
     return;
   }
@@ -498,7 +690,7 @@ function renderMessage(m) {
       <div class="meta">
         <span class="author">${escapeHtml(name)}</span>
         <span class="time">${fmtTime(m.created_at)}</span>
-        <button class="ghost del" data-del="${m.id}" title="削除" style="padding:0 8px">×</button>
+        <button class="ghost del" data-del="${m.id}" title="${escapeAttr(tr('msg.delete'))}" style="padding:0 8px">×</button>
       </div>
       ${text}${embedHtml}
     </div>`;
@@ -562,10 +754,10 @@ function renderEmbed(e) {
 
 // ---- チャンネル設定モーダル ----
 async function openSettings() {
-  if (!state.current) { toast('チャンネルがありません'); return; }
+  if (!state.current) { toast(tr('settings.no_channel')); return; }
   const ch = state.channels.find((c) => c.id === state.current);
   if (!ch) return;
-  $('setChName').textContent = ch.name;
+  $('setTitle').textContent = tr('settings.heading', { name: ch.name });
   $('setName').value = ch.name;
   $('setTopic').value = ch.topic || '';
   await loadWebhooks();
@@ -576,41 +768,41 @@ async function saveChannel() {
   const res = await api('/api/channels/' + state.current, { method: 'PATCH', body: JSON.stringify({
     name: $('setName').value, topic: $('setTopic').value,
   }) });
-  if (!res.ok) { toast('保存失敗'); return; }
+  if (!res.ok) { toast(tr('toast.save_failed')); return; }
   closeModals();
   await loadChannels(state.current);
-  toast('保存しました');
+  toast(tr('toast.saved'));
 }
 
 async function deleteChannel() {
   const ch = state.channels.find((c) => c.id === state.current);
-  if (!confirm(`#${ch ? ch.name : ''} を削除しますか?\nWebhookと履歴もすべて削除されます。`)) return;
+  if (!confirm(tr('confirm.delete_channel', { name: ch ? ch.name : '' }))) return;
   const res = await api('/api/channels/' + state.current, { method: 'DELETE' });
-  if (!res.ok) { const e = await res.json(); toast(e.error || '削除失敗'); return; }
+  if (!res.ok) { const e = await res.json(); toast(e.error || tr('toast.delete_failed')); return; }
   closeModals();
   state.current = null;
   await loadChannels();
-  toast('チャンネルを削除しました');
+  toast(tr('toast.channel_deleted'));
 }
 
 async function loadWebhooks() {
   const list = await (await api(`/api/channels/${state.current}/webhooks`)).json();
   const el = $('webhookList');
   el.innerHTML = '';
-  if (!list.length) { el.innerHTML = '<p class="muted">まだWebhookがありません。</p>'; return; }
+  if (!list.length) { el.innerHTML = `<p class="muted">${escapeHtml(tr('webhook.none'))}</p>`; return; }
   for (const t of list) {
-    const used = t.last_used_at ? `最終利用 ${fmtTime(t.last_used_at)}` : '未使用';
+    const used = t.last_used_at ? tr('webhook.last_used', { time: fmtTime(t.last_used_at) }) : tr('webhook.unused');
     const div = document.createElement('div');
     div.className = 'wh';
     div.innerHTML = `
-      <div class="row"><strong class="grow">${escapeHtml(t.name || '(無名)')}</strong>
-        <button class="danger" data-del="${t.id}">削除</button></div>
+      <div class="row"><strong class="grow">${escapeHtml(t.name || tr('webhook.noname'))}</strong>
+        <button class="danger" data-del="${t.id}">${escapeHtml(tr('common.delete'))}</button></div>
       <div class="url">${escapeHtml(t.url)}</div>
-      <div class="row"><button class="secondary" data-copy>コピー</button>
-        <span class="muted">${used}</span></div>`;
+      <div class="row"><button class="secondary" data-copy>${escapeHtml(tr('common.copy'))}</button>
+        <span class="muted">${escapeHtml(used)}</span></div>`;
     div.querySelector('[data-copy]').onclick = () => copyText(t.url);
     div.querySelector('[data-del]').onclick = async () => {
-      if (!confirm('このWebhookを削除しますか?')) return;
+      if (!confirm(tr('confirm.delete_webhook'))) return;
       await api('/api/tokens/' + t.id, { method: 'DELETE' });
       await loadWebhooks();
     };
@@ -624,11 +816,11 @@ async function createWebhook() {
   }) });
   $('newWebhookName').value = '';
   await loadWebhooks();
-  toast('Webhookを発行しました');
+  toast(tr('toast.webhook_created'));
 }
 
 async function clearMessages() {
-  if (!confirm('このチャンネルの履歴をすべて削除しますか?')) return;
+  if (!confirm(tr('confirm.clear_history'))) return;
   await api(`/api/channels/${state.current}/messages/clear`, { method: 'POST' });
   closeModals();
   await loadMessages();
@@ -640,6 +832,7 @@ function closeModals() {
   $('addChannelModal').classList.add('hidden');
   $('settingsModal').classList.add('hidden');
   $('createdModal').classList.add('hidden');
+  $('notifSheet').classList.add('hidden');
 }
 
 // ---- SSE(開いている画面へのリアルタイム配信) ----
@@ -751,10 +944,8 @@ function notifyFeedback() {
 }
 
 function applySoundUI() {
-  const btn = $('soundBtn');
-  if (!btn) return;
-  btn.textContent = state.sound ? '🔔' : '🔕';
-  btn.title = state.sound ? '通知音: ON(クリックで OFF)' : '通知音: OFF(クリックで ON)';
+  const sw = $('soundToggle');
+  if (sw) sw.checked = state.sound;
 }
 
 function toggleSound() {
@@ -767,6 +958,8 @@ function toggleSound() {
 // ---- 初期化 ----
 async function init() {
   const me = await (await fetch('/api/me', { credentials: 'same-origin' })).json();
+  applyI18n(me.lang);   // 静的 DOM を訳す。ログイン画面表示より前に確定させる。
+  applySoundUI();       // wire() 時点では言語未確定なので、ここで訳語の title に直す。
   state.authRequired = me.auth_required;
   if (me.auth_required && !me.authed) { showLogin(); return; }
   showApp();
@@ -784,10 +977,11 @@ function wire() {
   $('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
   $('logoutBtn').onclick = logout;
 
+  $('notifSettingsBtn').onclick = () => { refreshNotifStatus(); openModal('notifSheet'); };
   $('enableBtn').onclick = enableNotifications;
   $('disableBtn').onclick = disableNotifications;
   $('testBtn').onclick = testPush;
-  $('soundBtn').onclick = toggleSound;
+  $('soundToggle').onchange = toggleSound;
   applySoundUI();
 
   // 自動再生ポリシー対策: 最初のユーザー操作で AudioContext を起こす(一度だけ)。
