@@ -465,7 +465,7 @@ func (s *server) testPush(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	sender := push.New(v)
+	sender := push.New(v, s.cfg.Debug)
 	sent := 0
 	// デバイスごとの送信結果(ホスト+ステータス)を返し、UI で切り分けできるようにする。
 	results := make([]map[string]any, 0, len(subs))

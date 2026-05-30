@@ -166,7 +166,7 @@ func (h *Handler) fanout(n push.Notification) {
 		return
 	}
 	h.debugf("fanout to %d subscription(s)", len(subs))
-	sender := push.New(v)
+	sender := push.New(v, h.Debug)
 	for _, sub := range subs {
 		host := push.EndpointHost(sub.Endpoint)
 		status, err := sender.Send(sub, n)
