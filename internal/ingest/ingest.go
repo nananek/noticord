@@ -222,9 +222,12 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	username, body := payload.Notification(firstNonEmpty(t.Name, "noticord"))
 
 	// チャンネル名を解決し、通知タイトルに前置して「どのチャンネルか」を示す。
+	// あわせてチャンネル別の通知設定(notify)を取得しておく。
 	chName := ""
+	chNotify := true
 	if ch, _ := db.GetChannel(h.DB, t.ChannelID); ch != nil {
 		chName = ch.Name
+		chNotify = ch.Notify
 	}
 	notifTitle := username
 	if chName != "" {
@@ -266,13 +269,19 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	h.debugf("receive channel=#%s webhook=%s(%s) title=%s body_len=%d embeds=%d",
 		chName, t.Name, t.ID, notifTitle, len(body), len(payload.Embeds))
 
-	// 通知クリックで該当チャンネルを開けるよう URL にチャンネル ID を載せる。
-	h.fanout(push.Notification{
-		Title: notifTitle,
-		Body:  body,
-		URL:   "/?c=" + t.ChannelID,
-		Tag:   "noticord-" + t.ChannelID,
-	})
+	// チャンネル別通知設定: notify=OFF(ミュート)のチャンネルは Web Push を送らない。
+	// 履歴保存・SSE 配信は済んでいるので、開いている画面には届く。
+	if chNotify {
+		// 通知クリックで該当チャンネルを開けるよう URL にチャンネル ID を載せる。
+		h.fanout(push.Notification{
+			Title: notifTitle,
+			Body:  body,
+			URL:   "/?c=" + t.ChannelID,
+			Tag:   "noticord-" + t.ChannelID,
+		})
+	} else {
+		h.debugf("channel #%s is muted, skip push", chName)
+	}
 
 	if r.URL.Query().Get("wait") == "true" {
 		// Discord 同様、message_id を文字列で含むメッセージオブジェクトを返す。

@@ -23,6 +23,14 @@ const I18N = {
     'logout': 'Log out',
     'sidebar.channels': 'Channels',
     'sidebar.add_channel': 'Add channel',
+    'sidebar.add_group': 'Add group',
+    'group.new_prompt': 'New group name',
+    'group.rename_prompt': 'Group name',
+    'group.menu': 'Rename / delete',
+    'group.none': '(no group)',
+    'confirm.delete_group': 'Delete the group "{name}"?\nIts channels will be moved out of the group (not deleted).',
+    'toast.group_created': 'Group created',
+    'toast.group_deleted': 'Group deleted',
     'header.menu': 'Channels',
     'header.settings': 'Channel settings',
     'timeline.select_channel': 'Select a channel',
@@ -43,6 +51,10 @@ const I18N = {
     'settings.heading': 'Channel settings: #{name}',
     'settings.name_label': 'Channel name',
     'settings.topic_label': 'Topic',
+    'settings.group_label': 'Group',
+    'settings.notify_label': 'Push notifications',
+    'settings.sound_label': 'Notification sound',
+    'settings.badge_label': 'Unread badge',
     'settings.delete_channel': 'Delete channel',
     'settings.webhook_desc': 'A Discord-compatible URL that delivers to this channel. Paste it into the webhook target of the sending service.',
     'settings.webhook_name_ph': 'Purpose (e.g. Grafana)',
@@ -103,6 +115,14 @@ const I18N = {
     'logout': 'ログアウト',
     'sidebar.channels': 'チャンネル',
     'sidebar.add_channel': 'チャンネルを追加',
+    'sidebar.add_group': 'グループを追加',
+    'group.new_prompt': '新しいグループ名',
+    'group.rename_prompt': 'グループ名',
+    'group.menu': '名前変更 / 削除',
+    'group.none': '(グループなし)',
+    'confirm.delete_group': 'グループ「{name}」を削除しますか?\n所属チャンネルはグループ解除されます(削除はされません)。',
+    'toast.group_created': 'グループを作成しました',
+    'toast.group_deleted': 'グループを削除しました',
     'header.menu': 'チャンネル',
     'header.settings': 'チャンネル設定',
     'timeline.select_channel': 'チャンネルを選択してください',
@@ -123,6 +143,10 @@ const I18N = {
     'settings.heading': 'チャンネル設定: #{name}',
     'settings.name_label': 'チャンネル名',
     'settings.topic_label': 'トピック',
+    'settings.group_label': 'グループ',
+    'settings.notify_label': 'プッシュ通知',
+    'settings.sound_label': '通知音',
+    'settings.badge_label': '未読バッジ',
     'settings.delete_channel': 'チャンネルを削除',
     'settings.webhook_desc': 'このチャンネルに届くDiscord互換URLです。送信元サービスのWebhook先に貼り付けてください。',
     'settings.webhook_name_ph': '用途名 (例: Grafana)',
@@ -196,6 +220,7 @@ function dateLocale() { return LANG === 'ja' ? 'ja-JP' : 'en-US'; }
 // ---- 状態 ----
 const state = {
   channels: [],
+  groups: [],      // チャンネルグループ(カテゴリ)
   current: null,   // 選択中チャンネル id
   authRequired: false,
   unread: {},      // channelId -> 未読件数
@@ -450,7 +475,13 @@ async function testPush() {
 
 // ---- チャンネル ----
 async function loadChannels(selectId) {
-  state.channels = await (await api('/api/channels')).json();
+  // チャンネルとグループをまとめて取得(描画はグループ単位)。
+  const [chs, grs] = await Promise.all([
+    (await api('/api/channels')).json(),
+    (await api('/api/groups')).json(),
+  ]);
+  state.channels = chs;
+  state.groups = grs;
   renderChannelList();
   // 選択チャンネルを決める: 指定 > 既存維持 > 先頭
   let target = selectId || state.current;
@@ -461,42 +492,91 @@ async function loadChannels(selectId) {
   else renderEmptyMain();
 }
 
+// channelItem は1チャンネル分の DOM を作る。ミュート表示・未読バッジは
+// チャンネル別設定(badge / notify)に従う。
+function channelItem(c) {
+  const div = document.createElement('div');
+  div.className = 'channel-item' + (c.id === state.current ? ' active' : '') + (c.notify ? '' : ' muted');
+  div.draggable = true;
+  div.dataset.id = c.id;
+  const n = state.unread[c.id] || 0;
+  // 未読バッジは badge=ON のときだけ表示する(Discord のミュート相当)。
+  const badge = (c.badge && n > 0) ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : '';
+  const mute = c.notify ? '' : '<span class="mute-ico">🔕</span>';
+  div.innerHTML = `
+    <span class="grip" title="${escapeAttr(tr('grip.title'))}">⠿</span>
+    <span class="hash">#</span>
+    <span class="cname">${escapeHtml(c.name)}</span>${badge}${mute}`;
+  div.onclick = () => { selectChannel(c.id); $('app').classList.remove('drawer-open'); };
+  wireChannelDrag(div);
+  return div;
+}
+
 function renderChannelList() {
   const el = $('channelList');
   el.innerHTML = '';
+  // 未所属チャンネルを先頭に並べる。
   for (const c of state.channels) {
-    const div = document.createElement('div');
-    div.className = 'channel-item' + (c.id === state.current ? ' active' : '');
-    div.draggable = true;
-    div.dataset.id = c.id;
-    const n = state.unread[c.id] || 0;
-    const badge = n > 0 ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : '';
-    div.innerHTML = `
-      <span class="grip" title="${escapeAttr(tr('grip.title'))}">⠿</span>
-      <span class="hash">#</span>
-      <span class="cname">${escapeHtml(c.name)}</span>${badge}`;
-    div.onclick = () => { selectChannel(c.id); $('app').classList.remove('drawer-open'); };
-    wireChannelDrag(div);
-    el.appendChild(div);
+    if (!c.group_id) el.appendChild(channelItem(c));
+  }
+  // グループは position 順。各グループの見出し + 配下チャンネル。
+  const groups = state.groups.slice().sort((a, b) => a.position - b.position);
+  for (const g of groups) {
+    const wrap = document.createElement('div');
+    wrap.className = 'group';
+    wrap.dataset.gid = g.id;
+
+    const head = document.createElement('div');
+    head.className = 'group-head' + (g.collapsed ? ' collapsed' : '');
+    head.dataset.gid = g.id;
+    head.draggable = true;
+    head.innerHTML = `
+      <span class="chevron">▾</span>
+      <span class="ghandle" title="${escapeAttr(tr('grip.title'))}">⠿</span>
+      <span class="gname">${escapeHtml(g.name)}</span>
+      <button class="gmenu grename" title="${escapeAttr(tr('group.rename_prompt'))}">✎</button>
+      <button class="gmenu gdelete" title="${escapeAttr(tr('common.delete'))}">🗑</button>`;
+    head.onclick = (e) => {
+      if (e.target.closest('.gmenu') || e.target.closest('.ghandle')) return;
+      toggleGroupCollapse(g);
+    };
+    head.querySelector('.grename').onclick = (e) => { e.stopPropagation(); renameGroup(g); };
+    head.querySelector('.gdelete').onclick = (e) => { e.stopPropagation(); deleteGroup(g); };
+
+    const kids = document.createElement('div');
+    kids.className = 'group-children' + (g.collapsed ? ' collapsed' : '');
+    for (const c of state.channels) {
+      if (c.group_id === g.id) kids.appendChild(channelItem(c));
+    }
+    wireGroupHead(head);
+    wrap.appendChild(head);
+    wrap.appendChild(kids);
+    el.appendChild(wrap);
   }
 }
 
 // ---- チャンネル並び替え(ドラッグ&ドロップ) ----
+// dragKind は 'channel' か 'group'。dragId は対象 id。
+let dragKind = null;
 let dragId = null;
+
+function clearDropMarks() {
+  document.querySelectorAll('.channel-item, .group-head').forEach((x) =>
+    x.classList.remove('dragging', 'drop-before', 'drop-after', 'drop-into'));
+}
 
 function wireChannelDrag(el) {
   el.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    dragKind = 'channel';
     dragId = el.dataset.id;
     el.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     try { e.dataTransfer.setData('text/plain', dragId); } catch (_) {}
   });
-  el.addEventListener('dragend', () => {
-    dragId = null;
-    document.querySelectorAll('.channel-item').forEach((x) =>
-      x.classList.remove('dragging', 'drop-before', 'drop-after'));
-  });
+  el.addEventListener('dragend', () => { dragKind = null; dragId = null; clearDropMarks(); });
   el.addEventListener('dragover', (e) => {
+    if (dragKind !== 'channel') return;
     e.preventDefault();
     if (!dragId || el.dataset.id === dragId) return;
     const before = e.offsetY < el.offsetHeight / 2;
@@ -505,27 +585,125 @@ function wireChannelDrag(el) {
   });
   el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
   el.addEventListener('drop', (e) => {
+    if (dragKind !== 'channel') return;
     e.preventDefault();
+    e.stopPropagation();
     const before = el.classList.contains('drop-before');
     el.classList.remove('drop-before', 'drop-after');
-    if (dragId && el.dataset.id !== dragId) reorderChannel(dragId, el.dataset.id, before);
+    if (dragId && el.dataset.id !== dragId) {
+      const dst = state.channels.find((c) => c.id === el.dataset.id);
+      reorderChannel(dragId, dst ? (dst.group_id || '') : '', el.dataset.id, before);
+    }
   });
 }
 
-async function reorderChannel(srcId, dstId, before) {
-  const ids = state.channels.map((c) => c.id);
+// グループ見出しのドラッグ: 自身はグループ並び替え、チャンネルが乗ったら
+// そのグループへ取り込む(drop-into)。
+function wireGroupHead(head) {
+  head.addEventListener('dragstart', (e) => {
+    dragKind = 'group';
+    dragId = head.dataset.gid;
+    head.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', dragId); } catch (_) {}
+  });
+  head.addEventListener('dragend', () => { dragKind = null; dragId = null; clearDropMarks(); });
+  head.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (dragKind === 'channel') head.classList.add('drop-into');
+    else if (dragKind === 'group' && head.dataset.gid !== dragId) head.classList.add('drop-before');
+  });
+  head.addEventListener('dragleave', () => head.classList.remove('drop-into', 'drop-before'));
+  head.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    head.classList.remove('drop-into', 'drop-before');
+    if (dragKind === 'channel' && dragId) {
+      reorderChannel(dragId, head.dataset.gid, null, false); // グループ末尾へ取り込む
+    } else if (dragKind === 'group' && dragId && head.dataset.gid !== dragId) {
+      reorderGroup(dragId, head.dataset.gid);
+    }
+  });
+}
+
+// reorderChannel は src を dstGroupId 内の dst の前/後へ移動する(楽観的更新)。
+// dstId が null ならそのグループの末尾へ。group_id も合わせて更新する。
+async function reorderChannel(srcId, dstGroupId, dstId, before) {
+  const arr = state.channels;
+  const src = arr.find((c) => c.id === srcId);
+  if (!src) return;
+  src.group_id = dstGroupId || '';
+  arr.splice(arr.indexOf(src), 1); // 元位置から抜く
+  let to;
+  if (dstId) {
+    const dst = arr.find((c) => c.id === dstId);
+    to = arr.indexOf(dst);
+    if (to < 0) return;
+    if (!before) to += 1;
+  } else {
+    // グループ見出しへのドロップ: そのグループの末尾(配列上の最後)へ。
+    let last = -1;
+    arr.forEach((c, i) => { if ((c.group_id || '') === (dstGroupId || '')) last = i; });
+    to = last >= 0 ? last + 1 : arr.length;
+  }
+  arr.splice(to, 0, src);
+  renderChannelList();
+  await persistLayout();
+}
+
+// persistLayout は現在の配列順と所属グループをサーバーへ保存する。
+async function persistLayout() {
+  const layout = state.channels.map((c) => ({ id: c.id, group_id: c.group_id || '' }));
+  try {
+    await api('/api/channels/reorder', { method: 'POST', body: JSON.stringify({ layout }) });
+  } catch (_) {
+    toast(tr('toast.reorder_failed'));
+    await loadChannels(state.current);
+  }
+}
+
+// ---- グループ操作 ----
+async function addGroup() {
+  const name = prompt(tr('group.new_prompt'));
+  if (name == null || !name.trim()) return;
+  const res = await api('/api/groups', { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+  if (!res.ok) { const e = await res.json(); toast(e.error || tr('toast.create_failed')); return; }
+  await loadChannels(state.current);
+  toast(tr('toast.group_created'));
+}
+
+async function renameGroup(g) {
+  const name = prompt(tr('group.rename_prompt'), g.name);
+  if (name == null || !name.trim() || name.trim() === g.name) return;
+  await api('/api/groups/' + g.id, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
+  await loadChannels(state.current);
+}
+
+async function deleteGroup(g) {
+  if (!confirm(tr('confirm.delete_group', { name: g.name }))) return;
+  await api('/api/groups/' + g.id, { method: 'DELETE' });
+  await loadChannels(state.current);
+  toast(tr('toast.group_deleted'));
+}
+
+async function toggleGroupCollapse(g) {
+  g.collapsed = !g.collapsed; // 楽観的更新
+  renderChannelList();
+  await api('/api/groups/' + g.id, { method: 'PATCH', body: JSON.stringify({ collapsed: g.collapsed }) });
+}
+
+async function reorderGroup(srcId, dstId) {
+  const ids = state.groups.slice().sort((a, b) => a.position - b.position).map((g) => g.id);
   const from = ids.indexOf(srcId);
   if (from < 0) return;
-  ids.splice(from, 1); // 元位置から抜く
+  ids.splice(from, 1);
   let to = ids.indexOf(dstId);
   if (to < 0) return;
-  if (!before) to += 1; // 後ろに落とすなら1つ後ろへ
-  ids.splice(to, 0, srcId);
-  // ローカルを即並べ替えて即描画(楽観的更新)、その後サーバーへ永続化。
-  state.channels.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  ids.splice(to, 0, srcId); // 見出しの前へ挿入
+  ids.forEach((id, i) => { const g = state.groups.find((x) => x.id === id); if (g) g.position = i; });
   renderChannelList();
   try {
-    await api('/api/channels/reorder', { method: 'POST', body: JSON.stringify({ order: ids }) });
+    await api('/api/groups/reorder', { method: 'POST', body: JSON.stringify({ order: ids }) });
   } catch (_) {
     toast(tr('toast.reorder_failed'));
     await loadChannels(state.current);
@@ -760,6 +938,16 @@ async function openSettings() {
   $('setTitle').textContent = tr('settings.heading', { name: ch.name });
   $('setName').value = ch.name;
   $('setTopic').value = ch.topic || '';
+  // 所属グループの選択肢を組み立てる(先頭は「グループなし」)。
+  const sel = $('setGroup');
+  const groups = state.groups.slice().sort((a, b) => a.position - b.position);
+  sel.innerHTML = `<option value="">${escapeHtml(tr('group.none'))}</option>` +
+    groups.map((g) => `<option value="${escapeAttr(g.id)}">${escapeHtml(g.name)}</option>`).join('');
+  sel.value = ch.group_id || '';
+  // チャンネル別通知設定。
+  $('setNotify').checked = ch.notify;
+  $('setSound').checked = ch.sound;
+  $('setBadge').checked = ch.badge;
   await loadWebhooks();
   openModal('settingsModal');
 }
@@ -767,6 +955,8 @@ async function openSettings() {
 async function saveChannel() {
   const res = await api('/api/channels/' + state.current, { method: 'PATCH', body: JSON.stringify({
     name: $('setName').value, topic: $('setTopic').value,
+    group_id: $('setGroup').value,
+    notify: $('setNotify').checked, sound: $('setSound').checked, badge: $('setBadge').checked,
   }) });
   if (!res.ok) { toast(tr('toast.save_failed')); return; }
   closeModals();
@@ -867,8 +1057,9 @@ function connectSSE() {
       state.unread[ev.channel_id] = (state.unread[ev.channel_id] || 0) + 1;
       renderChannelList();
     }
-    // どのチャンネルでも新着フィードバック(音 + バイブ)。
-    notifyFeedback();
+    // 新着フィードバック(音 + バイブ)。チャンネル別の通知音設定に従う。
+    const ch = state.channels.find((c) => c.id === ev.channel_id);
+    if (!ch || ch.sound) notifyFeedback();
   });
 
   // 認証切れ等で切断されたら EventSource が自動再接続する。
@@ -990,6 +1181,7 @@ function wire() {
   document.addEventListener('keydown', unlockOnce);
 
   $('addChannelBtn').onclick = () => openModal('addChannelModal');
+  $('addGroupBtn').onclick = addGroup;
   $('createChannelBtn').onclick = createChannel;
   $('newChannelName').addEventListener('keydown', (e) => { if (e.key === 'Enter') createChannel(); });
 

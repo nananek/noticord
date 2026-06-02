@@ -22,11 +22,23 @@ CREATE TABLE IF NOT EXISTS config (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channel_groups (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  position   INTEGER NOT NULL DEFAULT 0,
+  collapsed  INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS channels (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   topic      TEXT NOT NULL DEFAULT '',
   position   INTEGER NOT NULL DEFAULT 0,
+  group_id   TEXT,
+  notify     INTEGER NOT NULL DEFAULT 1,
+  sound      INTEGER NOT NULL DEFAULT 1,
+  badge      INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
 
@@ -117,6 +129,11 @@ func migrate(d *sql.DB) error {
 		{"tokens", "channel_id", "ALTER TABLE tokens ADD COLUMN channel_id TEXT"},
 		{"messages", "channel_id", "ALTER TABLE messages ADD COLUMN channel_id TEXT"},
 		{"messages", "avatar", "ALTER TABLE messages ADD COLUMN avatar TEXT NOT NULL DEFAULT ''"},
+		// チャンネルのグルーピングと通知設定(既定はグループ無し・全ON)。
+		{"channels", "group_id", "ALTER TABLE channels ADD COLUMN group_id TEXT"},
+		{"channels", "notify", "ALTER TABLE channels ADD COLUMN notify INTEGER NOT NULL DEFAULT 1"},
+		{"channels", "sound", "ALTER TABLE channels ADD COLUMN sound INTEGER NOT NULL DEFAULT 1"},
+		{"channels", "badge", "ALTER TABLE channels ADD COLUMN badge INTEGER NOT NULL DEFAULT 1"},
 	} {
 		ok, err := hasColumn(d, m.table, m.col)
 		if err != nil {
@@ -251,6 +268,10 @@ type Channel struct {
 	Name          string `json:"name"`
 	Topic         string `json:"topic"`
 	Position      int    `json:"position"`
+	GroupID       string `json:"group_id"` // "" = 未所属
+	Notify        bool   `json:"notify"`   // Web Push を送るか
+	Sound         bool   `json:"sound"`    // 画面表示中のチャイムを鳴らすか
+	Badge         bool   `json:"badge"`    // 未読バッジを表示するか
 	CreatedAt     int64  `json:"created_at"`
 	WebhookCount  int    `json:"webhook_count"`
 	LastMessageAt int64  `json:"last_message_at"`
@@ -282,16 +303,35 @@ func CreateChannel(d *sql.DB, name, topic string) (Channel, error) {
 	var pos int
 	// 末尾に追加するため現在の最大 position+1 を採番する。
 	_ = d.QueryRow("SELECT COALESCE(MAX(position),-1)+1 FROM channels").Scan(&pos)
-	c := Channel{ID: newID(), Name: name, Topic: topic, Position: pos, CreatedAt: time.Now().Unix()}
-	_, err := d.Exec("INSERT INTO channels(id,name,topic,position,created_at) VALUES(?,?,?,?,?)",
+	c := Channel{ID: newID(), Name: name, Topic: topic, Position: pos,
+		Notify: true, Sound: true, Badge: true, CreatedAt: time.Now().Unix()}
+	_, err := d.Exec("INSERT INTO channels(id,name,topic,position,group_id,notify,sound,badge,created_at) VALUES(?,?,?,?,NULL,1,1,1,?)",
 		c.ID, c.Name, c.Topic, c.Position, c.CreatedAt)
 	return c, err
 }
 
+// scanChannel は通知フラグ(INTEGER)を bool へ詰め替えつつ1行を読む。
+// 集計列(webhook 数・最終メッセージ時刻)を読むかは withStats で切り替える。
+func scanChannel(s interface{ Scan(...any) error }, withStats bool) (Channel, error) {
+	var c Channel
+	var notify, sound, badge int
+	dst := []any{&c.ID, &c.Name, &c.Topic, &c.Position, &c.GroupID, &notify, &sound, &badge, &c.CreatedAt}
+	if withStats {
+		dst = append(dst, &c.WebhookCount, &c.LastMessageAt)
+	}
+	if err := s.Scan(dst...); err != nil {
+		return c, err
+	}
+	c.Notify, c.Sound, c.Badge = notify != 0, sound != 0, badge != 0
+	return c, nil
+}
+
+const channelCols = "id,name,topic,position,COALESCE(group_id,''),notify,sound,badge,created_at"
+
 // ListChannels は各チャンネルの webhook 数と最終メッセージ時刻を集計して返す。
 func ListChannels(d *sql.DB) ([]Channel, error) {
 	rows, err := d.Query(`
-		SELECT c.id, c.name, c.topic, c.position, c.created_at,
+		SELECT c.id, c.name, c.topic, c.position, COALESCE(c.group_id,''), c.notify, c.sound, c.badge, c.created_at,
 		       (SELECT COUNT(*) FROM tokens t WHERE t.channel_id = c.id),
 		       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.channel_id = c.id), 0)
 		FROM channels c
@@ -302,8 +342,8 @@ func ListChannels(d *sql.DB) ([]Channel, error) {
 	defer rows.Close()
 	var out []Channel
 	for rows.Next() {
-		var c Channel
-		if err := rows.Scan(&c.ID, &c.Name, &c.Topic, &c.Position, &c.CreatedAt, &c.WebhookCount, &c.LastMessageAt); err != nil {
+		c, err := scanChannel(rows, true)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -312,9 +352,7 @@ func ListChannels(d *sql.DB) ([]Channel, error) {
 }
 
 func GetChannel(d *sql.DB, id string) (*Channel, error) {
-	var c Channel
-	err := d.QueryRow("SELECT id,name,topic,position,created_at FROM channels WHERE id=?", id).
-		Scan(&c.ID, &c.Name, &c.Topic, &c.Position, &c.CreatedAt)
+	c, err := scanChannel(d.QueryRow("SELECT "+channelCols+" FROM channels WHERE id=?", id), false)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -324,20 +362,46 @@ func GetChannel(d *sql.DB, id string) (*Channel, error) {
 	return &c, nil
 }
 
-func UpdateChannel(d *sql.DB, id, name, topic string) error {
-	_, err := d.Exec("UPDATE channels SET name=?, topic=? WHERE id=?", name, topic, id)
+// UpdateChannel は名前・トピック・所属グループ・通知設定をまとめて上書きする。
+// group_id が空文字なら未所属(NULL)にする。
+func UpdateChannel(d *sql.DB, c Channel) error {
+	var gid any
+	if c.GroupID != "" {
+		gid = c.GroupID
+	}
+	_, err := d.Exec(
+		"UPDATE channels SET name=?, topic=?, group_id=?, notify=?, sound=?, badge=? WHERE id=?",
+		c.Name, c.Topic, gid, b2i(c.Notify), b2i(c.Sound), b2i(c.Badge), c.ID)
 	return err
 }
 
-// ReorderChannels は与えられた id 順に position を 0..n-1 で振り直す。
-// orderedIDs に含まれないチャンネルは末尾(既存 position 維持で後ろ)に残す。
-func ReorderChannels(d *sql.DB, orderedIDs []string) error {
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// LayoutItem はサイドバー上の1チャンネルの並び順と所属グループを表す。
+// GroupID が空文字なら未所属(NULL)。
+type LayoutItem struct {
+	ID      string `json:"id"`
+	GroupID string `json:"group_id"`
+}
+
+// SetChannelLayout は与えられた順に position を 0..n-1 で振り直し、
+// 各チャンネルの所属グループも一括更新する(ドラッグ&ドロップの永続化)。
+func SetChannelLayout(d *sql.DB, items []LayoutItem) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
-	for i, id := range orderedIDs {
-		if _, err := tx.Exec("UPDATE channels SET position=? WHERE id=?", i, id); err != nil {
+	for i, it := range items {
+		var gid any
+		if it.GroupID != "" {
+			gid = it.GroupID
+		}
+		if _, err := tx.Exec("UPDATE channels SET position=?, group_id=? WHERE id=?", i, gid, it.ID); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -368,6 +432,95 @@ func CountChannels(d *sql.DB) (int, error) {
 	var n int
 	err := d.QueryRow("SELECT COUNT(*) FROM channels").Scan(&n)
 	return n, err
+}
+
+// ---- channel groups(チャンネルのグルーピング) ----
+
+type Group struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Position  int    `json:"position"`
+	Collapsed bool   `json:"collapsed"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+func ListGroups(d *sql.DB) ([]Group, error) {
+	rows, err := d.Query("SELECT id,name,position,collapsed,created_at FROM channel_groups ORDER BY position, created_at")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Group
+	for rows.Next() {
+		var g Group
+		var collapsed int
+		if err := rows.Scan(&g.ID, &g.Name, &g.Position, &collapsed, &g.CreatedAt); err != nil {
+			return nil, err
+		}
+		g.Collapsed = collapsed != 0
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func GetGroup(d *sql.DB, id string) (*Group, error) {
+	var g Group
+	var collapsed int
+	err := d.QueryRow("SELECT id,name,position,collapsed,created_at FROM channel_groups WHERE id=?", id).
+		Scan(&g.ID, &g.Name, &g.Position, &collapsed, &g.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	g.Collapsed = collapsed != 0
+	return &g, nil
+}
+
+func CreateGroup(d *sql.DB, name string) (Group, error) {
+	var pos int
+	_ = d.QueryRow("SELECT COALESCE(MAX(position),-1)+1 FROM channel_groups").Scan(&pos)
+	g := Group{ID: newID(), Name: name, Position: pos, CreatedAt: time.Now().Unix()}
+	_, err := d.Exec("INSERT INTO channel_groups(id,name,position,collapsed,created_at) VALUES(?,?,?,0,?)",
+		g.ID, g.Name, g.Position, g.CreatedAt)
+	return g, err
+}
+
+func UpdateGroup(d *sql.DB, id, name string, collapsed bool) error {
+	_, err := d.Exec("UPDATE channel_groups SET name=?, collapsed=? WHERE id=?", name, b2i(collapsed), id)
+	return err
+}
+
+// DeleteGroup はグループを削除し、所属していたチャンネルを未所属(NULL)へ戻す。
+func DeleteGroup(d *sql.DB, id string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec("UPDATE channels SET group_id=NULL WHERE group_id=?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM channel_groups WHERE id=?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func ReorderGroups(d *sql.DB, orderedIDs []string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range orderedIDs {
+		if _, err := tx.Exec("UPDATE channel_groups SET position=? WHERE id=?", i, id); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ---- tokens ----

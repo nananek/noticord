@@ -71,6 +71,13 @@ func main() {
 	mux.Handle("POST /api/channels/reorder", s.protect(s.reorderChannels))
 	mux.Handle("PATCH /api/channels/{id}", s.protect(s.updateChannel))
 	mux.Handle("DELETE /api/channels/{id}", s.protect(s.deleteChannel))
+
+	// チャンネルグループ
+	mux.Handle("GET /api/groups", s.protect(s.listGroups))
+	mux.Handle("POST /api/groups", s.protect(s.createGroup))
+	mux.Handle("POST /api/groups/reorder", s.protect(s.reorderGroups))
+	mux.Handle("PATCH /api/groups/{id}", s.protect(s.updateGroup))
+	mux.Handle("DELETE /api/groups/{id}", s.protect(s.deleteGroup))
 	mux.Handle("GET /api/channels/{id}/webhooks", s.protect(s.listChannelWebhooks))
 	mux.Handle("POST /api/channels/{id}/webhooks", s.protect(s.createChannelWebhook))
 	mux.Handle("GET /api/channels/{id}/messages", s.protect(s.listChannelMessages))
@@ -338,14 +345,27 @@ func (s *server) createChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) reorderChannels(w http.ResponseWriter, r *http.Request) {
+	// 後方互換: 旧 {order:[id...]} はグループ未指定の並び替えとして受ける。
+	// 新形式 {layout:[{id,group_id}...]} はグループ所属も一括更新する。
 	var body struct {
-		Order []string `json:"order"`
+		Order  []string        `json:"order"`
+		Layout []db.LayoutItem `json:"layout"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Order) == 0 {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad order"})
 		return
 	}
-	if err := db.ReorderChannels(s.db, body.Order); err != nil {
+	items := body.Layout
+	if len(items) == 0 {
+		for _, id := range body.Order {
+			items = append(items, db.LayoutItem{ID: id})
+		}
+	}
+	if len(items) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad order"})
+		return
+	}
+	if err := db.SetChannelLayout(s.db, items); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -359,16 +379,38 @@ func (s *server) updateChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "channel not found"})
 		return
 	}
+	// すべて任意項目。指定された項目だけ現在値に上書きする。
 	var body struct {
-		Name  string `json:"name"`
-		Topic string `json:"topic"`
+		Name    *string `json:"name"`
+		Topic   *string `json:"topic"`
+		GroupID *string `json:"group_id"`
+		Notify  *bool   `json:"notify"`
+		Sound   *bool   `json:"sound"`
+		Badge   *bool   `json:"badge"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	name := normalizeChannelName(body.Name)
-	if name == "" {
-		name = ch.Name
+	upd := *ch
+	if body.Name != nil {
+		if n := normalizeChannelName(*body.Name); n != "" {
+			upd.Name = n
+		}
 	}
-	if err := db.UpdateChannel(s.db, id, name, strings.TrimSpace(body.Topic)); err != nil {
+	if body.Topic != nil {
+		upd.Topic = strings.TrimSpace(*body.Topic)
+	}
+	if body.GroupID != nil {
+		upd.GroupID = *body.GroupID
+	}
+	if body.Notify != nil {
+		upd.Notify = *body.Notify
+	}
+	if body.Sound != nil {
+		upd.Sound = *body.Sound
+	}
+	if body.Badge != nil {
+		upd.Badge = *body.Badge
+	}
+	if err := db.UpdateChannel(s.db, upd); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -388,6 +430,90 @@ func (s *server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := db.DeleteChannel(s.db, r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---- チャンネルグループ ----
+
+func (s *server) listGroups(w http.ResponseWriter, r *http.Request) {
+	gs, err := db.ListGroups(s.db)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if gs == nil {
+		gs = []db.Group{}
+	}
+	writeJSON(w, http.StatusOK, gs)
+}
+
+func (s *server) createGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "グループ名を入力してください"})
+		return
+	}
+	g, err := db.CreateGroup(s.db, name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+func (s *server) updateGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	g, err := db.GetGroup(s.db, id)
+	if err != nil || g == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "group not found"})
+		return
+	}
+	var body struct {
+		Name      *string `json:"name"`
+		Collapsed *bool   `json:"collapsed"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	name, collapsed := g.Name, g.Collapsed
+	if body.Name != nil {
+		if n := strings.TrimSpace(*body.Name); n != "" {
+			name = n
+		}
+	}
+	if body.Collapsed != nil {
+		collapsed = *body.Collapsed
+	}
+	if err := db.UpdateGroup(s.db, id, name, collapsed); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	g, _ = db.GetGroup(s.db, id)
+	writeJSON(w, http.StatusOK, g)
+}
+
+func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	if err := db.DeleteGroup(s.db, r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) reorderGroups(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Order) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad order"})
+		return
+	}
+	if err := db.ReorderGroups(s.db, body.Order); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
