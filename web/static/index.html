@@ -26,7 +26,7 @@
     button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
     button.danger { background:transparent; color:var(--danger); border:1px solid #3a2730; }
     button:disabled { opacity:.5; cursor:default; }
-    input, textarea { font:inherit; background:var(--panel2); border:1px solid #2c3650; color:var(--fg); border-radius:8px; padding:8px 10px; width:100%; }
+    input, textarea, select { font:inherit; background:var(--panel2); border:1px solid #2c3650; color:var(--fg); border-radius:8px; padding:8px 10px; width:100%; }
     a { color:var(--accent); }
     .hidden { display:none !important; }
     .muted { color:var(--muted); font-size:13px; }
@@ -60,6 +60,29 @@
     .channel-item.dragging { opacity:.4; }
     .channel-item.drop-before { box-shadow:inset 0 2px 0 var(--accent); }
     .channel-item.drop-after { box-shadow:inset 0 -2px 0 var(--accent); }
+    /* ミュート中(プッシュ通知 OFF)のチャンネルは控えめに表示する */
+    .channel-item.muted .cname { opacity:.55; }
+    .channel-item .mute-ico { font-size:11px; opacity:.6; margin-left:auto; }
+
+    /* チャンネルグループ(折りたたみ可能なカテゴリ) */
+    .group { margin-top:2px; }
+    .group-head { display:flex; align-items:center; gap:4px; padding:6px 6px 2px; cursor:pointer;
+      font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); user-select:none; }
+    .group-head:hover { color:var(--fg); }
+    .group-head .chevron { font-size:10px; transition:transform .15s; flex:none; width:12px; text-align:center; }
+    .group-head.collapsed .chevron { transform:rotate(-90deg); }
+    .group-head .gname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .group-head .ghandle { opacity:0; cursor:grab; padding:0 2px; touch-action:none; }
+    .group-head:hover .ghandle { opacity:.5; }
+    .group-head .gmenu { opacity:0; background:none; border:none; color:var(--muted); padding:0 4px; cursor:pointer; font-size:13px; }
+    .group-head:hover .gmenu { opacity:.7; }
+    .group-head.dragging { opacity:.4; }
+    .group-head.drop-before { box-shadow:inset 0 2px 0 var(--accent); }
+    .group-children.collapsed { display:none; }
+    /* グループ内のチャンネルは少しインデントする */
+    .group-children .channel-item { margin-left:6px; }
+    /* グループ見出しへドロップ(チャンネルをそのグループへ移動)時のハイライト */
+    .group-head.drop-into { background:#5b8cff22; border-radius:6px; color:var(--fg); }
     /* Discord 風「new messages」未読仕切り */
     .new-divider { display:flex; align-items:center; gap:8px; margin:6px 0; color:var(--danger); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
     .new-divider::before { content:""; flex:1; height:1px; background:var(--danger); opacity:.6; }
@@ -158,6 +181,8 @@
       #app.drawer-open .sidebar { transform:translateX(0); }
       #app.drawer-open #drawerScrim { display:block; position:fixed; inset:0; z-index:39; background:#0006; }
       .mobile-only { display:inline-flex; }
+      /* タッチ端末はホバーが無いので、グループ操作ボタンを常時表示する */
+      .group-head .gmenu, .group-head .ghandle, .channel-item .grip { opacity:.5; }
     }
   </style>
 </head>
@@ -188,7 +213,8 @@
       <div class="channels">
         <div class="section-label">
           <span class="grow" data-i18n="sidebar.channels">チャンネル</span>
-          <button id="addChannelBtn" class="ghost" style="padding:2px 8px" title="チャンネルを追加" data-i18n-title="sidebar.add_channel">＋</button>
+          <button id="addGroupBtn" class="ghost" style="padding:2px 8px" title="グループを追加" data-i18n-title="sidebar.add_group">📁＋</button>
+          <button id="addChannelBtn" class="ghost" style="padding:2px 8px; margin-left:4px" title="チャンネルを追加" data-i18n-title="sidebar.add_channel">＋</button>
         </div>
         <div id="channelList"></div>
       </div>
@@ -261,7 +287,25 @@
         <label data-i18n="settings.topic_label">トピック</label>
         <input id="setTopic">
       </div>
-      <div class="row" style="margin-bottom:18px">
+      <div class="field">
+        <label data-i18n="settings.group_label">グループ</label>
+        <select id="setGroup"></select>
+      </div>
+
+      <label class="switch-row" for="setNotify">
+        <span>🔔 <span data-i18n="settings.notify_label">プッシュ通知</span></span>
+        <input type="checkbox" id="setNotify" class="switch">
+      </label>
+      <label class="switch-row" for="setSound">
+        <span>📢 <span data-i18n="settings.sound_label">通知音</span></span>
+        <input type="checkbox" id="setSound" class="switch">
+      </label>
+      <label class="switch-row" for="setBadge">
+        <span>🔵 <span data-i18n="settings.badge_label">未読バッジ</span></span>
+        <input type="checkbox" id="setBadge" class="switch">
+      </label>
+
+      <div class="row" style="margin:14px 0 18px">
         <button id="saveChannelBtn" data-i18n="common.save">保存</button>
         <span class="grow"></span>
         <button id="deleteChannelBtn" class="danger" data-i18n="settings.delete_channel">チャンネルを削除</button>
