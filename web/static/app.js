@@ -526,6 +526,14 @@ function renderChannelList() {
     wrap.className = 'group';
     wrap.dataset.gid = g.id;
 
+    // 折りたたみ時は配下チャンネルの未読を見出しに合算表示する(badge=ON のみ)。
+    let groupUnread = 0;
+    for (const c of state.channels) {
+      if (c.group_id === g.id && c.badge) groupUnread += state.unread[c.id] || 0;
+    }
+    const gBadge = (g.collapsed && groupUnread > 0)
+      ? `<span class="badge gbadge">${groupUnread > 99 ? '99+' : groupUnread}</span>` : '';
+
     const head = document.createElement('div');
     head.className = 'group-head' + (g.collapsed ? ' collapsed' : '');
     head.dataset.gid = g.id;
@@ -533,7 +541,7 @@ function renderChannelList() {
     head.innerHTML = `
       <span class="chevron">▾</span>
       <span class="ghandle" title="${escapeAttr(tr('grip.title'))}">⠿</span>
-      <span class="gname">${escapeHtml(g.name)}</span>
+      <span class="gname">${escapeHtml(g.name)}</span>${gBadge}
       <button class="gmenu grename" title="${escapeAttr(tr('group.rename_prompt'))}">✎</button>
       <button class="gmenu gdelete" title="${escapeAttr(tr('common.delete'))}">🗑</button>`;
     head.onclick = (e) => {
