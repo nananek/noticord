@@ -702,7 +702,9 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			if _, err := w.Write([]byte("event: " + ev.Type + "\ndata: " + string(b) + "\n\n")); err != nil {
+			// 種別はデフォルトの message イベントに乗せ、データ内の type で振り分ける
+			// (event: 付きの名前付きイベントにすると 'message' リスナーに届かないため)。
+			if _, err := w.Write([]byte("data: " + string(b) + "\n\n")); err != nil {
 				return
 			}
 			flusher.Flush()
