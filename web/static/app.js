@@ -275,6 +275,47 @@ function fmtIso(s) {
   const d = new Date(s);
   return isNaN(d) ? s : d.toLocaleString(dateLocale(), { hour12: false });
 }
+
+// Discord タイムスタンプ <t:UNIX:STYLE> のスタイル別フォーマット。
+// STYLE: t=短時刻 T=長時刻 d=短日付 D=長日付 f=日付+時刻(既定) F=曜日+日付+時刻 R=相対。
+const TS_STYLE_OPTS = {
+  t: { timeStyle: 'short' },
+  T: { timeStyle: 'medium' },
+  d: { dateStyle: 'short' },
+  D: { dateStyle: 'long' },
+  f: { dateStyle: 'long', timeStyle: 'short' },
+  F: { dateStyle: 'full', timeStyle: 'short' },
+};
+function relTime(unix) {
+  const diff = unix - Math.floor(Date.now() / 1000);
+  const abs = Math.abs(diff);
+  const rtf = new Intl.RelativeTimeFormat(dateLocale(), { numeric: 'auto' });
+  const units = [['year', 31536000], ['month', 2592000], ['week', 604800],
+    ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]];
+  for (const [unit, secs] of units) {
+    if (abs >= secs || unit === 'second') return rtf.format(Math.round(diff / secs), unit);
+  }
+}
+// 表示文字列とツールチップ(常に完全表記)を返す。不正な値なら null。
+function fmtDiscordTs(unix, style) {
+  const n = Number(unix);
+  if (!Number.isFinite(n)) return null;
+  const d = new Date(n * 1000);
+  if (isNaN(d)) return null;
+  const loc = dateLocale();
+  const s = TS_STYLE_OPTS[style] ? style : 'f';
+  const text = style === 'R' ? relTime(n)
+    : d.toLocaleString(loc, { hour12: false, ...TS_STYLE_OPTS[s] });
+  const title = d.toLocaleString(loc, { hour12: false, dateStyle: 'full', timeStyle: 'short' });
+  return { text, title };
+}
+// 相対表記(:R)は時間経過で古くなるので定期的に貼り替える。
+function tickRelativeTimestamps() {
+  document.querySelectorAll('.md-ts[data-rel]').forEach((el) => {
+    const r = fmtDiscordTs(el.getAttribute('data-ts'), 'R');
+    if (r) el.textContent = r.text;
+  });
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -299,6 +340,13 @@ function markdownInline(s) {
   t = t.replace(/__([^_]+)__/g, '<u>$1</u>');
   t = t.replace(/~~([^~]+)~~/g, '<s>$1</s>');
   t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  // Discord タイムスタンプ。escapeHtml 済みなので < > は &lt; &gt; で来る。最後に処理する。
+  t = t.replace(/&lt;t:(\d{1,15})(?::([tTdDfFR]))?&gt;/g, (m, unix, style) => {
+    const r = fmtDiscordTs(unix, style);
+    if (!r) return m;
+    const rel = style === 'R' ? ` data-ts="${unix}" data-rel="1"` : '';
+    return `<span class="md-ts"${rel} title="${escapeAttr(r.title)}">${escapeHtml(r.text)}</span>`;
+  });
   return t;
 }
 function markdown(s) { return markdownInline(String(s)).replace(/\n/g, '<br>'); }
@@ -1169,6 +1217,7 @@ async function init() {
   const c = new URL(location.href).searchParams.get('c');
   await loadChannels(c || null);
   connectSSE(); // 開いている画面へのリアルタイム配信を開始
+  setInterval(tickRelativeTimestamps, 30000); // <t:..:R> の相対表記を更新し続ける
 }
 
 function wire() {
