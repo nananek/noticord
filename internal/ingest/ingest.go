@@ -7,9 +7,13 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +24,18 @@ import (
 	"noticord/internal/push"
 )
 
-const maxBody = 1 << 20 // 1MiB
+// maxBody is the maximum complete request size. Discord's default upload limit is
+// 10 MiB; keeping the limit on the entire multipart body bounds both image bytes
+// and attacker-controlled MIME metadata.
+const maxBody int64 = 10 << 20 // 10 MiB
+
+type uploadedImage struct {
+	Index       int
+	Filename    string
+	Description string
+	ContentType string
+	Data        []byte
+}
 
 // Handler は受信エンドポイントの実装。DB を所有する admin から生成される。
 type Handler struct {
@@ -88,14 +103,27 @@ func (h *Handler) resolveMessage(w http.ResponseWriter, r *http.Request) (*db.To
 
 // messageObject は GET/PATCH 応答用の Discord 風メッセージオブジェクトを組み立てる。
 func messageObject(m *db.Message) map[string]any {
+	attachments := make([]map[string]any, 0, len(m.Attachments))
+	for _, a := range m.Attachments {
+		// Webhook の公開 origin には画像 GET を置かない。ここで URL を返すと
+		// CDN のように見えてしまうため、Discord 互換のメタデータだけを返す。
+		attachments = append(attachments, map[string]any{
+			"id":           strconv.FormatInt(a.ID, 10),
+			"filename":     a.Filename,
+			"description":  a.Description,
+			"content_type": a.ContentType,
+			"size":         a.Size,
+		})
+	}
 	return map[string]any{
-		"id":         strconv.FormatInt(m.ID, 10),
-		"type":       0,
-		"channel_id": m.ChannelID,
-		"webhook_id": m.TokenID,
-		"content":    m.Content,
-		"embeds":     json.RawMessage(firstNonEmpty(m.Embeds, "[]")),
-		"timestamp":  time.Unix(m.CreatedAt, 0).UTC().Format(time.RFC3339),
+		"id":          strconv.FormatInt(m.ID, 10),
+		"type":        0,
+		"channel_id":  m.ChannelID,
+		"webhook_id":  m.TokenID,
+		"content":     m.Content,
+		"embeds":      json.RawMessage(firstNonEmpty(m.Embeds, "[]")),
+		"attachments": attachments,
+		"timestamp":   time.Unix(m.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 }
 
@@ -116,9 +144,10 @@ func (h *Handler) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, raw, err := parsePayload(r)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	payload, raw, uploads, err := parsePayload(r)
 	if err != nil {
-		http.Error(w, `{"message":"Cannot send an empty message","code":50006}`, http.StatusBadRequest)
+		writePayloadError(w, err)
 		return
 	}
 
@@ -143,11 +172,18 @@ func (h *Handler) editMessage(w http.ResponseWriter, r *http.Request) {
 	m.Content = payload.Content
 	m.Embeds = embedsJSON
 	m.Raw = raw
-	if err := db.UpdateMessage(h.DB, *m); err != nil {
+	keepIDs, err := retainedAttachmentIDs(m.Attachments, payload.Attachments, uploads)
+	if err != nil {
+		writePayloadError(w, err)
+		return
+	}
+	attachments, err := db.UpdateMessageWithAttachments(h.DB, *m, keepIDs, dbAttachments(uploads))
+	if err != nil {
 		log.Printf("update message: %v", err)
 		http.Error(w, `{"message":"Internal Server Error"}`, http.StatusInternalServerError)
 		return
 	}
+	m.Attachments = attachments
 
 	// 開いている画面へ「その場編集」を配信する。
 	if h.Broker != nil {
@@ -212,14 +248,22 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, raw, err := parsePayload(r)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	payload, raw, uploads, err := parsePayload(r)
 	if err != nil {
-		http.Error(w, `{"message":"Cannot send an empty message","code":50006}`, http.StatusBadRequest)
+		writePayloadError(w, err)
+		return
+	}
+	if err := requireAllUploadsDescribed(payload.Attachments, uploads); err != nil {
+		writePayloadError(w, err)
 		return
 	}
 
 	// 送信者名(embed の要約も含む)と本文を組み立てる。
 	username, body := payload.Notification(firstNonEmpty(t.Name, "noticord"))
+	if strings.TrimSpace(payload.Content) == "" && len(uploads) > 0 {
+		body = attachmentSummary(uploads)
+	}
 
 	// チャンネル名を解決し、通知タイトルに前置して「どのチャンネルか」を示す。
 	// あわせてチャンネル別の通知設定(notify)を取得しておく。
@@ -251,11 +295,14 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		Raw:       raw,
 		CreatedAt: time.Now().Unix(),
 	}
-	msgID, err := db.AddMessage(h.DB, msg)
+	msgID, attachments, err := db.AddMessageWithAttachments(h.DB, msg, dbAttachments(uploads))
 	if err != nil {
 		log.Printf("save message: %v", err)
+		http.Error(w, `{"message":"Internal Server Error"}`, http.StatusInternalServerError)
+		return
 	}
 	msg.ID = msgID
+	msg.Attachments = attachments
 	_ = db.TouchToken(h.DB, t.ID)
 	if h.KeepMessages > 0 {
 		_ = db.PruneMessages(h.DB, h.KeepMessages)
@@ -266,8 +313,8 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		h.Broker.Publish(broker.Event{Type: "message", ChannelID: t.ChannelID, Data: msg})
 	}
 
-	h.debugf("receive channel=#%s webhook=%s(%s) title=%s body_len=%d embeds=%d",
-		chName, t.Name, t.ID, notifTitle, len(body), len(payload.Embeds))
+	h.debugf("receive channel=#%s webhook=%s(%s) title=%s body_len=%d embeds=%d attachments=%d",
+		chName, t.Name, t.ID, notifTitle, len(body), len(payload.Embeds), len(uploads))
 
 	// チャンネル別通知設定: notify=OFF(ミュート)のチャンネルは Web Push を送らない。
 	// 履歴保存・SSE 配信は済んでいるので、開いている画面には届く。
@@ -328,48 +375,302 @@ func (h *Handler) fanout(n push.Notification) {
 }
 
 // parsePayload は JSON / form(payload_json) / multipart(payload_json) を受ける。
-func parsePayload(r *http.Request) (discord.Payload, string, error) {
-	r.Body = io.NopCloser(io.LimitReader(r.Body, maxBody))
+// multipart の file handle と temporary file はこの関数を抜ける前に必ず閉じて削除し、
+// 保存すべき画像だけを検証済みの byte slice として返す。呼び出し側はあらかじめ
+// http.MaxBytesReader で r.Body を maxBody に包む。
+func parsePayload(r *http.Request) (discord.Payload, string, []uploadedImage, error) {
 	ct := r.Header.Get("Content-Type")
 	var raw string
+	var uploads []uploadedImage
 
 	switch {
 	case strings.HasPrefix(ct, "application/x-www-form-urlencoded"):
 		if err := r.ParseForm(); err != nil {
-			return discord.Payload{}, "", err
+			return discord.Payload{}, "", nil, err
 		}
 		raw = r.PostFormValue("payload_json")
 	case strings.HasPrefix(ct, "multipart/form-data"):
-		if err := r.ParseMultipartForm(maxBody); err != nil {
-			return discord.Payload{}, "", err
+		// Keep only a small amount in memory. Larger, still valid uploads are backed
+		// by temporary files which RemoveAll below removes on every path.
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			return discord.Payload{}, "", nil, err
 		}
+		if r.MultipartForm == nil {
+			return discord.Payload{}, "", nil, errInvalidAttachment
+		}
+		defer r.MultipartForm.RemoveAll()
 		raw = r.FormValue("payload_json")
+		var err error
+		uploads, err = readUploadedImages(r)
+		if err != nil {
+			return discord.Payload{}, "", nil, err
+		}
 	default:
 		buf, err := io.ReadAll(r.Body)
 		if err != nil {
-			return discord.Payload{}, "", err
+			return discord.Payload{}, "", nil, err
 		}
 		raw = strings.TrimSpace(string(buf))
 	}
 
 	if raw == "" {
-		return discord.Payload{}, "", errEmpty
+		return discord.Payload{}, "", nil, errEmpty
 	}
 	var p discord.Payload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return discord.Payload{}, "", err
+		return discord.Payload{}, "", nil, err
 	}
-	if strings.TrimSpace(p.Content) == "" && len(p.Embeds) == 0 {
-		return discord.Payload{}, "", errEmpty
+	if err := bindUploadMetadata(&p, uploads); err != nil {
+		return discord.Payload{}, "", nil, err
 	}
-	return p, raw, nil
+	if strings.TrimSpace(p.Content) == "" && len(p.Embeds) == 0 && len(p.Attachments) == 0 && len(uploads) == 0 {
+		return discord.Payload{}, "", nil, errEmpty
+	}
+	return p, raw, uploads, nil
 }
 
-var errEmpty = &emptyError{}
+// readUploadedImages accepts only Discord's canonical files[n] parts. Validation
+// is deliberately done on both declared MIME type and file signature: the stored
+// type is later sent to the browser, so neither client-provided value is trusted.
+func readUploadedImages(r *http.Request) ([]uploadedImage, error) {
+	files := r.MultipartForm.File
+	indices := make([]int, 0, len(files))
+	byIndex := make(map[int]string, len(files))
+	for field, headers := range files {
+		idx, ok := filePartIndex(field)
+		if !ok || len(headers) != 1 {
+			return nil, fmt.Errorf("%w: expected one files[n] part", errInvalidAttachment)
+		}
+		if _, exists := byIndex[idx]; exists {
+			return nil, fmt.Errorf("%w: duplicate file index", errInvalidAttachment)
+		}
+		byIndex[idx] = field
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	out := make([]uploadedImage, 0, len(indices))
+	for _, idx := range indices {
+		h := files[byIndex[idx]][0]
+		filename := h.Filename
+		if !validFilename(filename) {
+			return nil, fmt.Errorf("%w: invalid filename", errInvalidAttachment)
+		}
+		declared, _, err := mime.ParseMediaType(h.Header.Get("Content-Type"))
+		if err != nil || !allowedImageType(strings.ToLower(declared)) {
+			return nil, fmt.Errorf("%w: unsupported content type", errInvalidAttachment)
+		}
+		f, err := h.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := func() ([]byte, error) {
+			defer f.Close()
+			return io.ReadAll(io.LimitReader(f, maxBody+1))
+		}()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if int64(len(data)) > maxBody || len(data) == 0 {
+			return nil, fmt.Errorf("%w: image is empty or too large", errInvalidAttachment)
+		}
+		detected := sniffImageType(data)
+		if detected == "" || detected != strings.ToLower(declared) {
+			return nil, fmt.Errorf("%w: image signature does not match content type", errInvalidAttachment)
+		}
+		out = append(out, uploadedImage{Index: idx, Filename: filename, ContentType: detected, Data: data})
+	}
+	return out, nil
+}
+
+func filePartIndex(field string) (int, bool) {
+	if !strings.HasPrefix(field, "files[") || !strings.HasSuffix(field, "]") {
+		return 0, false
+	}
+	v := strings.TrimSuffix(strings.TrimPrefix(field, "files["), "]")
+	idx, err := strconv.Atoi(v)
+	if err != nil || idx < 0 || strconv.Itoa(idx) != v {
+		return 0, false
+	}
+	return idx, true
+}
+
+func validFilename(name string) bool {
+	if name == "" || len(name) > 255 || strings.TrimSpace(name) != name || strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func allowedImageType(contentType string) bool {
+	switch contentType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func sniffImageType(data []byte) string {
+	switch {
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg"
+	case len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a"):
+		return "image/gif"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// bindUploadMetadata attaches an attachments[id=n] description to files[n].
+// References without a matching upload are allowed here because PATCH uses them
+// to retain an existing attachment; receive rejects them after parsing.
+func bindUploadMetadata(p *discord.Payload, uploads []uploadedImage) error {
+	refs := make(map[int]discord.Attachment, len(p.Attachments))
+	for _, a := range p.Attachments {
+		idx, err := attachmentIndex(a.ID)
+		if err != nil || idx < 0 {
+			return fmt.Errorf("%w: attachment id", errInvalidAttachment)
+		}
+		if _, exists := refs[idx]; exists {
+			return fmt.Errorf("%w: duplicate attachment id", errInvalidAttachment)
+		}
+		if a.Filename != "" && !validFilename(a.Filename) {
+			return fmt.Errorf("%w: invalid attachment filename", errInvalidAttachment)
+		}
+		refs[idx] = a
+	}
+	if p.Attachments == nil {
+		return nil // Discord allows multipart files without the optional metadata array.
+	}
+	for i := range uploads {
+		a, ok := refs[uploads[i].Index]
+		if !ok {
+			return fmt.Errorf("%w: missing metadata for files[%d]", errInvalidAttachment, uploads[i].Index)
+		}
+		if a.Filename != "" && a.Filename != uploads[i].Filename {
+			return fmt.Errorf("%w: filename does not match files[%d]", errInvalidAttachment, uploads[i].Index)
+		}
+		uploads[i].Description = a.Description
+	}
+	return nil
+}
+
+func attachmentIndex(id discord.AttachmentID) (int, error) {
+	v := string(id)
+	if strings.TrimSpace(v) != v || v == "" {
+		return 0, errors.New("empty attachment id")
+	}
+	i, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || i < 0 || i > int64(^uint(0)>>1) {
+		return 0, errors.New("invalid attachment id")
+	}
+	return int(i), nil
+}
+
+// requireAllUploadsDescribed applies POST semantics: attachment references may
+// only describe the submitted files, never a non-existent prior attachment.
+func requireAllUploadsDescribed(refs []discord.Attachment, uploads []uploadedImage) error {
+	if refs == nil {
+		return nil
+	}
+	matched := make(map[int]bool, len(uploads))
+	for _, u := range uploads {
+		matched[u.Index] = true
+	}
+	for _, a := range refs {
+		idx, err := attachmentIndex(a.ID)
+		if err != nil || !matched[idx] {
+			return fmt.Errorf("%w: attachment has no file", errInvalidAttachment)
+		}
+	}
+	return nil
+}
+
+// retainedAttachmentIDs resolves PATCH's mixed attachment list. IDs that match
+// files[n] are new uploads; all other IDs must name an existing attachment to
+// retain. Omitting attachments therefore removes all current files, matching the
+// documented replacement semantics.
+func retainedAttachmentIDs(existing []db.Attachment, refs []discord.Attachment, uploads []uploadedImage) ([]int64, error) {
+	newIndices := make(map[int]bool, len(uploads))
+	for _, u := range uploads {
+		newIndices[u.Index] = true
+	}
+	old := make(map[int64]db.Attachment, len(existing))
+	for _, a := range existing {
+		old[a.ID] = a
+	}
+	kept := make([]int64, 0, len(refs))
+	seen := make(map[int64]bool, len(refs))
+	for _, ref := range refs {
+		idx, err := attachmentIndex(ref.ID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: attachment id", errInvalidAttachment)
+		}
+		if newIndices[idx] {
+			continue
+		}
+		a, ok := old[int64(idx)]
+		if !ok || seen[a.ID] {
+			return nil, fmt.Errorf("%w: unknown existing attachment", errInvalidAttachment)
+		}
+		if ref.Filename != "" && ref.Filename != a.Filename {
+			return nil, fmt.Errorf("%w: existing attachment filename", errInvalidAttachment)
+		}
+		seen[a.ID] = true
+		kept = append(kept, a.ID)
+	}
+	return kept, nil
+}
+
+func dbAttachments(uploads []uploadedImage) []db.Attachment {
+	out := make([]db.Attachment, 0, len(uploads))
+	for _, u := range uploads {
+		out = append(out, db.Attachment{
+			Filename: u.Filename, Description: u.Description, ContentType: u.ContentType,
+			Size: int64(len(u.Data)), Data: u.Data,
+		})
+	}
+	return out
+}
+
+func attachmentSummary(uploads []uploadedImage) string {
+	names := make([]string, 0, len(uploads))
+	for _, u := range uploads {
+		names = append(names, u.Filename)
+	}
+	return "Image attachment: " + strings.Join(names, ", ")
+}
+
+var (
+	errEmpty             = &emptyError{}
+	errInvalidAttachment = errors.New("invalid attachment")
+)
 
 type emptyError struct{}
 
 func (e *emptyError) Error() string { return "empty payload" }
+
+func writePayloadError(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"message": "Request body too large", "code": 50035})
+		return
+	}
+	if errors.Is(err, errEmpty) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Cannot send an empty message", "code": 50006})
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid Form Body", "code": 50035})
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

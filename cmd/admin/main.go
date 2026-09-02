@@ -64,6 +64,9 @@ func main() {
 	mux.Handle("GET /api/vapid-public-key", s.protect(s.vapidKey))
 	mux.Handle("POST /api/subscribe", s.protect(s.subscribe))
 	mux.Handle("POST /api/unsubscribe", s.protect(s.unsubscribe))
+	// 添付バイトは管理画面と同じ認証境界でのみ配信する。ingest UDS には
+	// この route を登録しないため、公開 Webhook URL から画像は読めない。
+	mux.Handle("GET /api/attachments/{id}", s.protect(s.getAttachment))
 
 	// チャンネル
 	mux.Handle("GET /api/channels", s.protect(s.listChannels))
@@ -587,10 +590,47 @@ func (s *server) listChannelMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if ms == nil {
-		ms = []db.Message{}
+	views := make([]db.Message, 0, len(ms))
+	for _, m := range ms {
+		views = append(views, s.messageView(m))
 	}
-	writeJSON(w, http.StatusOK, ms)
+	writeJSON(w, http.StatusOK, views)
+}
+
+// messageView adds the authenticated, same-origin image URL only at the admin
+// boundary. db.Attachment intentionally never persists this derived URL.
+func (s *server) messageView(m db.Message) db.Message {
+	view := m
+	view.Attachments = make([]db.Attachment, len(m.Attachments))
+	for i, a := range m.Attachments {
+		a.Data = nil
+		a.URL = "/api/attachments/" + strconv.FormatInt(a.ID, 10)
+		view.Attachments[i] = a
+	}
+	return view
+}
+
+func (s *server) getAttachment(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	a, err := db.GetAttachment(s.db, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if a == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", a.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(a.Size, 10))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(a.Data)
 }
 
 func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
@@ -697,6 +737,14 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 		case ev, alive := <-ch:
 			if !alive {
 				return
+			}
+			switch m := ev.Data.(type) {
+			case db.Message:
+				ev.Data = s.messageView(m)
+			case *db.Message:
+				if m != nil {
+					ev.Data = s.messageView(*m)
+				}
 			}
 			b, err := json.Marshal(ev)
 			if err != nil {

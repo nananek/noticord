@@ -107,6 +107,7 @@ docker compose up -d --build
 
 - `application/json`(`content`, `username`, `avatar_url`, `embeds[]`)
 - `application/x-www-form-urlencoded` / `multipart/form-data` の `payload_json`
+- multipart の `files[n]` による画像(`image/jpeg` / `image/png` / `image/gif` / `image/webp`、リクエスト全体で 10 MiB まで)
 - `?wait=true`(メッセージオブジェクトを返却。既定は `204 No Content`)
 
 embed は `title / description / url / color / author / fields[] / image / thumbnail / footer / timestamp` を保持。
@@ -118,6 +119,14 @@ OS 通知はプレーンテキストのため要約し、履歴ビューでフ�
 curl -X POST "$NOTICORD_PUBLIC_URL/api/webhooks/<id>/<token>" \
   -H 'Content-Type: application/json' \
   -d '{"username":"test","embeds":[{"title":"hello","description":"**bold** and `code`","color":5814783}]}'
+```
+
+画像だけの投稿も可能です。`payload_json` と一意な `files[n]` を使い、任意の `attachments` 配列で説明を付けられます。画像は SQLite の履歴へ保存され、ログイン済みの管理画面内だけで表示されます(公開 Webhook 側は画像バイトを配信しません)。
+
+```bash
+curl -X POST "$WEBHOOK_URL?wait=true" \
+  -F 'payload_json={"embeds":[{"image":{"url":"attachment://graph.png"}}],"attachments":[{"id":0,"filename":"graph.png","description":"日次グラフ"}]}' \
+  -F 'files[0]=@graph.png;type=image/png'
 ```
 
 ### メッセージの編集・削除(Discord 互換)
@@ -141,7 +150,7 @@ curl "$WEBHOOK_URL/messages/$MID"
 curl -X DELETE "$WEBHOOK_URL/messages/$MID"
 ```
 
-- `PATCH` … `content` / `embeds` を全置換。`username` / `avatar_url` は指定時のみ更新。`200` でメッセージを返却。
+- `PATCH` … `content` / `embeds` と添付を全置換。既存画像を残すには応答の attachment `id` を `attachments` に含め、画像追加には `files[n]` を指定します。`attachments` を省略すると既存画像は削除されます。`username` / `avatar_url` は指定時のみ更新。`200` でメッセージを返却。
 - `GET` … メッセージオブジェクトを返却。
 - `DELETE` … `204 No Content`。
 - 編集・削除は開いている画面に **SSE でその場反映**(編集は再通知なし、Discord と同じ)。
@@ -149,7 +158,7 @@ curl -X DELETE "$WEBHOOK_URL/messages/$MID"
 
 ## 運用メモ
 
-- **データ**: すべて `./data/noticord.db`(SQLite, WAL)。バックアップはこのファイルを退避するだけ。
+- **データ**: 受理した画像バイトを含め、すべて `./data/noticord.db`(SQLite, WAL)。バックアップはこのファイルを退避するだけです。画像分だけ履歴保持時の DB サイズは増えます。
 - **履歴保持**: 既定で最新 1000 件(`internal/config` の `KeepMessages`)。
 - **VAPID 鍵**: admin 初回起動時に生成し DB に保存。鍵を失うと既存購読は無効化されるため、`./data` は保持すること。
 - **UI 言語**: `NOTICORD_LANG` で `en` / `ja` を選択(既定 `en`)。サーバー起動時に決まり、`/api/me` 経由で PWA に渡されます。

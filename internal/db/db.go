@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -71,6 +72,20 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
+
+-- 添付はファイルシステムではなく DB に保持する。メッセージを削除した時に
+-- バイト列も必ず消えるよう FK cascade を使う。
+CREATE TABLE IF NOT EXISTS attachments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id   INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  content_type TEXT NOT NULL,
+  size         INTEGER NOT NULL,
+  data         BLOB NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 `
 
 // Open は SQLite を開き、スキーマ適用と旧DBのマイグレーションを行う。
@@ -629,15 +644,30 @@ func DeleteSubscriptionByEndpoint(d *sql.DB, endpoint string) error {
 // ---- messages ----
 
 type Message struct {
-	ID        int64  `json:"id"`
-	TokenID   string `json:"token_id"`
-	ChannelID string `json:"channel_id"`
-	Username  string `json:"username"`
-	Avatar    string `json:"avatar"`
-	Content   string `json:"content"`
-	Embeds    string `json:"embeds"`
-	Raw       string `json:"raw"`
-	CreatedAt int64  `json:"created_at"`
+	ID          int64        `json:"id"`
+	TokenID     string       `json:"token_id"`
+	ChannelID   string       `json:"channel_id"`
+	Username    string       `json:"username"`
+	Avatar      string       `json:"avatar"`
+	Content     string       `json:"content"`
+	Embeds      string       `json:"embeds"`
+	Raw         string       `json:"raw"`
+	CreatedAt   int64        `json:"created_at"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment はメッセージに紐づく画像。Data は API 応答へ JSON 化しない。
+// URL は admin API が応答時に付与する一時的な表示用の相対 URL であり、DB には保存しない。
+type Attachment struct {
+	ID          int64  `json:"id"`
+	MessageID   int64  `json:"-"`
+	Filename    string `json:"filename"`
+	Description string `json:"description,omitempty"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+	Data        []byte `json:"-"`
+	CreatedAt   int64  `json:"created_at"`
+	URL         string `json:"url,omitempty"`
 }
 
 func AddMessage(d *sql.DB, m Message) (int64, error) {
@@ -651,6 +681,63 @@ func AddMessage(d *sql.DB, m Message) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// AddMessageWithAttachments はメッセージと添付を単一トランザクションで保存する。
+// 途中で失敗しても、履歴や BLOB の残骸を残さない。
+func AddMessageWithAttachments(d *sql.DB, m Message, attachments []Attachment) (int64, []Attachment, error) {
+	if m.CreatedAt == 0 {
+		m.CreatedAt = time.Now().Unix()
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, nil, err
+	}
+	rollback := func(err error) (int64, []Attachment, error) {
+		_ = tx.Rollback()
+		return 0, nil, err
+	}
+	res, err := tx.Exec(
+		"INSERT INTO messages(token_id,channel_id,username,avatar,content,embeds,raw,created_at) VALUES(?,?,?,?,?,?,?,?)",
+		m.TokenID, m.ChannelID, m.Username, m.Avatar, m.Content, m.Embeds, m.Raw, m.CreatedAt)
+	if err != nil {
+		return rollback(err)
+	}
+	mid, err := res.LastInsertId()
+	if err != nil {
+		return rollback(err)
+	}
+	created, err := insertAttachments(tx, mid, attachments)
+	if err != nil {
+		return rollback(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, err
+	}
+	return mid, created, nil
+}
+
+func insertAttachments(tx *sql.Tx, messageID int64, attachments []Attachment) ([]Attachment, error) {
+	out := make([]Attachment, 0, len(attachments))
+	for _, a := range attachments {
+		if a.CreatedAt == 0 {
+			a.CreatedAt = time.Now().Unix()
+		}
+		a.MessageID = messageID
+		res, err := tx.Exec(
+			"INSERT INTO attachments(message_id,filename,description,content_type,size,data,created_at) VALUES(?,?,?,?,?,?,?)",
+			a.MessageID, a.Filename, a.Description, a.ContentType, a.Size, a.Data, a.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		a.ID, err = res.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		a.Data = nil // callers use metadata; bytes stay in SQLite until explicitly requested.
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 const messageCols = "id,COALESCE(token_id,''),COALESCE(channel_id,''),username,avatar,content,embeds,raw,created_at"
@@ -682,7 +769,16 @@ func ListMessagesByChannel(d *sql.DB, channelID string, limit int) ([]Message, e
 	if err != nil {
 		return nil, err
 	}
-	return scanMessages(rows)
+	ms, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ms {
+		if ms[i].Attachments, err = ListAttachmentsByMessage(d, ms[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return ms, nil
 }
 
 // GetMessage は ID で1件取得する。存在しなければ (nil, nil)。
@@ -697,6 +793,11 @@ func GetMessage(d *sql.DB, id int64) (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	var attachErr error
+	m.Attachments, attachErr = ListAttachmentsByMessage(d, m.ID)
+	if attachErr != nil {
+		return nil, attachErr
+	}
 	return &m, nil
 }
 
@@ -707,6 +808,97 @@ func UpdateMessage(d *sql.DB, m Message) error {
 		"UPDATE messages SET username=?, avatar=?, content=?, embeds=?, raw=? WHERE id=?",
 		m.Username, m.Avatar, m.Content, m.Embeds, m.Raw, m.ID)
 	return err
+}
+
+// UpdateMessageWithAttachments は本文等の更新と添付の保持・追加・削除を原子的に行う。
+// keepIDs は更新後も残す、このメッセージに属する添付 ID の一覧である。
+func UpdateMessageWithAttachments(d *sql.DB, m Message, keepIDs []int64, additions []Attachment) ([]Attachment, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, err
+	}
+	rollback := func(err error) ([]Attachment, error) {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if _, err := tx.Exec(
+		"UPDATE messages SET username=?, avatar=?, content=?, embeds=?, raw=? WHERE id=?",
+		m.Username, m.Avatar, m.Content, m.Embeds, m.Raw, m.ID); err != nil {
+		return rollback(err)
+	}
+	if len(keepIDs) == 0 {
+		if _, err := tx.Exec("DELETE FROM attachments WHERE message_id=?", m.ID); err != nil {
+			return rollback(err)
+		}
+	} else {
+		args := make([]any, 0, len(keepIDs)+1)
+		args = append(args, m.ID)
+		marks := make([]string, len(keepIDs))
+		for i, id := range keepIDs {
+			marks[i] = "?"
+			args = append(args, id)
+		}
+		if _, err := tx.Exec("DELETE FROM attachments WHERE message_id=? AND id NOT IN ("+strings.Join(marks, ",")+")", args...); err != nil {
+			return rollback(err)
+		}
+	}
+	_, err = insertAttachments(tx, m.ID, additions)
+	if err != nil {
+		return rollback(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	kept, err := listAttachmentsByMessage(d, m.ID, false)
+	if err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// ListAttachmentsByMessage は BLOB を除く表示用メタデータを返す。
+func ListAttachmentsByMessage(d *sql.DB, messageID int64) ([]Attachment, error) {
+	return listAttachmentsByMessage(d, messageID, false)
+}
+
+func listAttachmentsByMessage(d *sql.DB, messageID int64, withData bool) ([]Attachment, error) {
+	cols := "id,message_id,filename,description,content_type,size,created_at"
+	if withData {
+		cols += ",data"
+	}
+	rows, err := d.Query("SELECT "+cols+" FROM attachments WHERE message_id=? ORDER BY id", messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Attachment
+	for rows.Next() {
+		var a Attachment
+		if withData {
+			err = rows.Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
+		} else {
+			err = rows.Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// GetAttachment は管理 API の画像取得用に BLOB を含めて返す。
+func GetAttachment(d *sql.DB, id int64) (*Attachment, error) {
+	var a Attachment
+	err := d.QueryRow("SELECT id,message_id,filename,description,content_type,size,created_at,data FROM attachments WHERE id=?", id).
+		Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 func DeleteMessage(d *sql.DB, id int64) error {
