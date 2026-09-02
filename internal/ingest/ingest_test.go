@@ -1,10 +1,16 @@
 package ingest
 
 import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +19,12 @@ import (
 
 // setup は一時 DB・チャンネル・Webhook を用意し、テスト用 HTTP サーバーを返す。
 func setup(t *testing.T) (*httptest.Server, db.Token) {
+	t.Helper()
+	srv, tok, _ := setupWithDB(t)
+	return srv, tok
+}
+
+func setupWithDB(t *testing.T) (*httptest.Server, db.Token, *sql.DB) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -34,7 +46,7 @@ func setup(t *testing.T) (*httptest.Server, db.Token) {
 	h.Routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, tok
+	return srv, tok, d
 }
 
 func do(t *testing.T, method, url, body string) (*http.Response, string) {
@@ -53,6 +65,64 @@ func do(t *testing.T, method, url, body string) (*http.Response, string) {
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	return resp, string(b)
+}
+
+func doRequest(t *testing.T, req *http.Request) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", req.Method, req.URL, err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, b
+}
+
+// multipartImageRequest builds Discord's payload_json + files[n] form without
+// relying on CreateFormFile's application/octet-stream default.
+func multipartImageRequest(t *testing.T, method, url string, payload any, files []struct {
+	Index, Name, ContentType string
+	Data                     []byte
+}) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("payload_json", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", `form-data; name="files[`+f.Index+`]"; filename="`+f.Name+`"`)
+		h.Set("Content-Type", f.ContentType)
+		part, err := w.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(f.Data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(method, url, &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return req
+}
+
+// png is a valid 1x1 transparent PNG. It exercises both multipart metadata and
+// magic-byte validation, not just the client-provided Content-Type.
+var png = []byte{
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+	0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
 }
 
 // TestMessageEditLifecycle は Discord 互換の送信→編集→取得→削除の往復を検証する。
@@ -108,6 +178,245 @@ func TestEditWrongTokenRejected(t *testing.T) {
 	resp, _ := do(t, http.MethodPatch, bad, `{"content":"hack"}`)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("PATCH wrong token: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestMultipartImageLifecycle(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	postPayload := map[string]any{
+		"attachments": []map[string]any{{"id": 0, "filename": "pixel.png", "description": "first image"}},
+		"embeds":      []map[string]any{{"image": map[string]any{"url": "attachment://pixel.png"}}},
+	}
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base+"?wait=true", postPayload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "pixel.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multipart POST: got %d body=%s", resp.StatusCode, body)
+	}
+	var posted struct {
+		ID          string `json:"id"`
+		Attachments []struct {
+			ID          string `json:"id"`
+			Filename    string `json:"filename"`
+			Description string `json:"description"`
+			ContentType string `json:"content_type"`
+			Size        int64  `json:"size"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &posted); err != nil {
+		t.Fatal(err)
+	}
+	if len(posted.Attachments) != 1 || posted.Attachments[0].Filename != "pixel.png" || posted.Attachments[0].Description != "first image" || posted.Attachments[0].ContentType != "image/png" || posted.Attachments[0].Size != int64(len(png)) {
+		t.Fatalf("unexpected attachment response: %s", body)
+	}
+	messageID, err := strconv.ParseInt(posted.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedMessage, err := db.GetMessage(d, messageID)
+	if err != nil || storedMessage == nil || len(storedMessage.Attachments) != 1 {
+		t.Fatalf("stored message = %#v, %v", storedMessage, err)
+	}
+	firstID := storedMessage.Attachments[0].ID
+	stored, err := db.GetAttachment(d, firstID)
+	if err != nil || stored == nil || !bytes.Equal(stored.Data, png) {
+		t.Fatalf("stored image = %#v, %v", stored, err)
+	}
+
+	// PATCH retains the returned image ID and appends files[0].
+	patchPayload := map[string]any{
+		"content": "with two images",
+		"attachments": []map[string]any{
+			{"id": posted.Attachments[0].ID, "filename": "pixel.png"},
+			{"id": 0, "filename": "second.png", "description": "second image"},
+		},
+	}
+	resp, body = doRequest(t, multipartImageRequest(t, http.MethodPatch, base+"/messages/"+posted.ID, patchPayload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "second.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multipart PATCH: got %d body=%s", resp.StatusCode, body)
+	}
+	var patched struct {
+		Attachments []struct {
+			ID string `json:"id"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &patched); err != nil || len(patched.Attachments) != 2 {
+		t.Fatalf("PATCH attachments=%s err=%v", body, err)
+	}
+	storedMessage, err = db.GetMessage(d, messageID)
+	if err != nil || storedMessage == nil || len(storedMessage.Attachments) != 2 {
+		t.Fatalf("patched stored message = %#v, %v", storedMessage, err)
+	}
+	secondID := storedMessage.Attachments[1].ID
+
+	// PATCH without attachments uses the documented replacement semantics.
+	resp, bodyText := do(t, http.MethodPatch, base+"/messages/"+posted.ID, `{"content":"no images"}`)
+	if resp.StatusCode != http.StatusOK || strings.Contains(bodyText, "pixel.png") {
+		t.Fatalf("remove attachments PATCH: got %d body=%s", resp.StatusCode, bodyText)
+	}
+	for _, id := range []int64{firstID, secondID} {
+		a, err := db.GetAttachment(d, id)
+		if err != nil || a != nil {
+			t.Fatalf("attachment %d remains after PATCH: %#v, %v", id, a, err)
+		}
+	}
+}
+
+func TestExistingAttachmentIDDoesNotCollideWithFilesIndex(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base+"?wait=true", map[string]any{
+		"attachments": []map[string]any{{"id": 0, "filename": "old.png", "description": "old image"}},
+	}, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "old.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initial multipart POST: got %d body=%s", resp.StatusCode, body)
+	}
+	var posted struct {
+		ID          string `json:"id"`
+		Attachments []struct {
+			ID string `json:"id"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &posted); err != nil || len(posted.Attachments) != 1 {
+		t.Fatalf("initial attachment response=%s err=%v", body, err)
+	}
+	publicID, err := strconv.ParseInt(posted.Attachments[0].ID, 10, 64)
+	if err != nil || publicID <= maxFileIndex {
+		t.Fatalf("attachment public ID overlaps files[n] index range: %q", posted.Attachments[0].ID)
+	}
+
+	// files[1] is valid even when an old row happened to have internal ID 1.
+	// The old public ID and new upload index must remain separate namespaces.
+	patchPayload := map[string]any{
+		"attachments": []map[string]any{
+			{"id": posted.Attachments[0].ID, "filename": "old.png"},
+			{"id": 1, "filename": "new.png", "description": "new image"},
+		},
+	}
+	resp, body = doRequest(t, multipartImageRequest(t, http.MethodPatch, base+"/messages/"+posted.ID, patchPayload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"1", "new.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH retaining old attachment and adding files[1]: got %d body=%s", resp.StatusCode, body)
+	}
+	var patched struct {
+		Attachments []struct {
+			ID          string `json:"id"`
+			Filename    string `json:"filename"`
+			Description string `json:"description"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &patched); err != nil {
+		t.Fatal(err)
+	}
+	if len(patched.Attachments) != 2 || patched.Attachments[0].ID != posted.Attachments[0].ID || patched.Attachments[1].Filename != "new.png" || patched.Attachments[1].Description != "new image" {
+		t.Fatalf("unexpected PATCH attachment response: %s", body)
+	}
+	mID, err := strconv.ParseInt(posted.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := db.GetMessage(d, mID)
+	if err != nil || m == nil || len(m.Attachments) != 2 {
+		t.Fatalf("stored attachments = %#v, %v", m, err)
+	}
+	for _, a := range m.Attachments {
+		stored, err := db.GetAttachment(d, a.ID)
+		if err != nil || stored == nil || !bytes.Equal(stored.Data, png) {
+			t.Fatalf("stored attachment %q = %#v, %v", a.PublicID, stored, err)
+		}
+	}
+}
+
+func TestFilePartIndexLimit(t *testing.T) {
+	if _, ok := filePartIndex("files[2147483647]"); !ok {
+		t.Fatal("maximum supported files[n] index was rejected")
+	}
+	if _, ok := filePartIndex("files[2147483648]"); ok {
+		t.Fatal("out-of-range files[n] index was accepted")
+	}
+}
+
+func TestMultipartImageAllowsEmptyAttachmentMetadata(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	payload := map[string]any{"attachments": []any{}}
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base+"?wait=true", payload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "pixel.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multipart POST with empty metadata: got %d body=%s", resp.StatusCode, body)
+	}
+	var posted struct {
+		ID          string `json:"id"`
+		Attachments []struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &posted); err != nil {
+		t.Fatal(err)
+	}
+	if len(posted.Attachments) != 1 || posted.Attachments[0].Description != "" {
+		t.Fatalf("unexpected attachment response: %s", body)
+	}
+	mID, err := strconv.ParseInt(posted.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := db.GetMessage(d, mID)
+	if err != nil || m == nil || len(m.Attachments) != 1 {
+		t.Fatalf("stored message = %#v, %v", m, err)
+	}
+	if a, err := db.GetAttachment(d, m.Attachments[0].ID); err != nil || a == nil || !bytes.Equal(a.Data, png) {
+		t.Fatalf("stored image = %#v, %v", a, err)
+	}
+}
+
+func TestRejectsInvalidMultipartWithoutResidue(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	payload := map[string]any{"attachments": []map[string]any{{"id": 0, "filename": "not-image.png"}}}
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base, payload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "not-image.png", "image/png", []byte("not a png")}}))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad image: got %d body=%s", resp.StatusCode, body)
+	}
+	var count int
+	if err := d.QueryRow("SELECT COUNT(*) FROM messages").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("invalid multipart left messages=%d err=%v", count, err)
+	}
+	if err := d.QueryRow("SELECT COUNT(*) FROM attachments").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("invalid multipart left attachments=%d err=%v", count, err)
+	}
+}
+
+func TestAttachmentDeleteCascades(t *testing.T) {
+	_, _, d := setupWithDB(t)
+	mid, attachments, err := db.AddMessageWithAttachments(d, db.Message{ChannelID: "channel", Username: "test", Embeds: "[]", Raw: "{}"}, []db.Attachment{{
+		Filename: "pixel.png", ContentType: "image/png", Size: int64(len(png)), Data: png,
+	}})
+	if err != nil || len(attachments) != 1 {
+		t.Fatalf("add message attachment: id=%d attachments=%v err=%v", mid, attachments, err)
+	}
+	if err := db.DeleteMessage(d, mid); err != nil {
+		t.Fatal(err)
+	}
+	a, err := db.GetAttachment(d, attachments[0].ID)
+	if err != nil || a != nil {
+		t.Fatalf("cascade failed: %#v, %v", a, err)
 	}
 }
 

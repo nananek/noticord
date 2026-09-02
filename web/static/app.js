@@ -325,6 +325,32 @@ const escapeAttr = escapeHtml;
 function safeUrl(u) {
   return typeof u === 'string' && /^https?:\/\//i.test(u.trim());
 }
+// 添付 URL はサーバーが管理 API 応答にだけ付ける同一オリジンの固定 route
+// に限定する。Webhook の raw payload に任意 URL を混ぜても画像として開かない。
+function attachmentUrl(a) {
+  if (!a || typeof a.url !== 'string') return '';
+  try {
+    const u = new URL(a.url, location.origin);
+    if (u.origin !== location.origin || !/^\/api\/attachments\/\d+$/.test(u.pathname) || u.search || u.hash) return '';
+    return u.pathname;
+  } catch (_) { return ''; }
+}
+function attachmentUrlForFilename(filename, attachments) {
+  if (typeof filename !== 'string' || !filename.startsWith('attachment://') || !Array.isArray(attachments)) return '';
+  const name = filename.slice('attachment://'.length);
+  const match = attachments.find((a) => a && a.filename === name);
+  return attachmentUrl(match);
+}
+function imageUrl(raw, attachments) {
+  return attachmentUrlForFilename(raw, attachments) || (safeUrl(raw) ? raw : '');
+}
+function formatBytes(n) {
+  n = Number(n);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+}
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast(tr('toast.copied')); }
   catch (_) { toast(tr('toast.copy_failed')); }
@@ -915,8 +941,10 @@ function renderMessage(m) {
   if (m.embeds && m.embeds !== '[]') {
     try { embeds = JSON.parse(m.embeds) || []; } catch (_) {}
   }
+  const attachments = Array.isArray(m.attachments) ? m.attachments : [];
   const text = m.content ? `<div class="text">${markdown(m.content)}</div>` : '';
-  const embedHtml = embeds.map(renderEmbed).join('');
+  const embedHtml = embeds.map((e) => renderEmbed(e, attachments)).join('');
+  const attachmentsHtml = renderAttachments(attachments);
 
   row.innerHTML = `
     <div class="avatar">${avatar}</div>
@@ -926,8 +954,14 @@ function renderMessage(m) {
         <span class="time">${fmtTime(m.created_at)}</span>
         <button class="ghost del" data-del="${m.id}" title="${escapeAttr(tr('msg.delete'))}" style="padding:0 8px">×</button>
       </div>
-      ${text}${embedHtml}
+      ${text}${embedHtml}${attachmentsHtml}
     </div>`;
+  row.querySelectorAll('.attachment-image').forEach((img) => {
+    img.addEventListener('error', () => {
+      const failed = img.closest('.attachment')?.querySelector('.attachment-failed');
+      if (failed) failed.classList.remove('hidden');
+    }, { once: true });
+  });
   row.querySelector('[data-del]').onclick = async () => {
     await api('/api/messages/' + m.id, { method: 'DELETE' });
     await loadMessages();
@@ -935,8 +969,22 @@ function renderMessage(m) {
   return row;
 }
 
+function renderAttachments(attachments) {
+  if (!Array.isArray(attachments)) return '';
+  const out = attachments.map((a) => {
+    if (!a || typeof a !== 'object') return '';
+    const name = typeof a.filename === 'string' && a.filename ? a.filename : 'image';
+    const description = typeof a.description === 'string' && a.description ? ` — ${a.description}` : '';
+    const caption = `${escapeHtml(name)}${escapeHtml(description)}${a.size != null ? ` (${escapeHtml(formatBytes(a.size))})` : ''}`;
+    const url = attachmentUrl(a);
+    if (!url) return `<div class="attachment-fallback">🖼 ${caption}</div>`;
+    return `<figure class="attachment"><a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img class="attachment-image" loading="lazy" src="${escapeAttr(url)}" alt="${escapeAttr(name)}"></a><figcaption>${caption}<span class="attachment-failed hidden"> (image failed to load)</span></figcaption></figure>`;
+  }).join('');
+  return out ? `<div class="attachments">${out}</div>` : '';
+}
+
 // embed を Discord 風カードにレンダリング
-function renderEmbed(e) {
+function renderEmbed(e, attachments = []) {
   if (!e || typeof e !== 'object') return '';
   const color = typeof e.color === 'number' && e.color > 0
     ? '#' + e.color.toString(16).padStart(6, '0') : '#4f545c';
@@ -966,12 +1014,14 @@ function renderEmbed(e) {
       </div>`).join('');
     inner += `<div class="embed-fields">${fields}</div>`;
   }
-  if (e.image && safeUrl(e.image.url)) {
-    inner += `<a href="${escapeAttr(e.image.url)}" target="_blank" rel="noopener"><img class="embed-image" src="${escapeAttr(e.image.url)}" alt=""></a>`;
+  const image = e.image && imageUrl(e.image.url, attachments);
+  if (image) {
+    inner += `<a href="${escapeAttr(image)}" target="_blank" rel="noopener"><img class="embed-image" loading="lazy" src="${escapeAttr(image)}" alt=""></a>`;
   }
   let thumb = '';
-  if (e.thumbnail && safeUrl(e.thumbnail.url)) {
-    thumb = `<img class="embed-thumb" src="${escapeAttr(e.thumbnail.url)}" alt="">`;
+  const thumbnail = e.thumbnail && imageUrl(e.thumbnail.url, attachments);
+  if (thumbnail) {
+    thumb = `<img class="embed-thumb" loading="lazy" src="${escapeAttr(thumbnail)}" alt="">`;
   }
   if ((e.footer && e.footer.text) || e.timestamp) {
     const icon = e.footer && safeUrl(e.footer.icon_url)

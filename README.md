@@ -111,6 +111,7 @@ docker compose up -d --build
 
 - `application/json` (`content`, `username`, `avatar_url`, `embeds[]`)
 - `payload_json` in `application/x-www-form-urlencoded` / `multipart/form-data`
+- Images in multipart `files[n]` (`image/jpeg`, `image/png`, `image/gif`, or `image/webp`; 10 MiB for the complete request)
 - `?wait=true` (returns the message object; default is `204 No Content`)
 
 Embeds preserve `title / description / url / color / author / fields[] / image / thumbnail / footer / timestamp`.
@@ -123,6 +124,18 @@ Quick test (inside the tailnet or via the public URL):
 curl -X POST "$NOTICORD_PUBLIC_URL/api/webhooks/<id>/<token>" \
   -H 'Content-Type: application/json' \
   -d '{"username":"test","embeds":[{"title":"hello","description":"**bold** and `code`","color":5814783}]}'
+```
+
+An image-only message is valid. Use `payload_json` and a uniquely numbered `files[n]` field (where `n` is
+an integer from 0 through 2147483647); the optional `attachments` array adds its description. This bounded
+index range is separate from the snowflake-shaped IDs returned for stored attachments, so PATCH can retain an
+existing image while adding any valid `files[n]`. Images are stored in the SQLite history and displayed only
+after logging in to the private admin screen (the public webhook endpoint never serves image bytes).
+
+```bash
+curl -X POST "$WEBHOOK_URL?wait=true" \
+  -F 'payload_json={"embeds":[{"image":{"url":"attachment://graph.png"}}],"attachments":[{"id":0,"filename":"graph.png","description":"Daily graph"}]}' \
+  -F 'files[0]=@graph.png;type=image/png'
 ```
 
 ### Editing / deleting messages (Discord-compatible)
@@ -146,7 +159,7 @@ curl "$WEBHOOK_URL/messages/$MID"
 curl -X DELETE "$WEBHOOK_URL/messages/$MID"
 ```
 
-- `PATCH` … fully replaces `content` / `embeds`. `username` / `avatar_url` are updated only when provided. Returns `200` with the message.
+- `PATCH` … fully replaces `content` / `embeds` and attachments. To retain an existing image, include its returned attachment `id` in `attachments`; include `files[n]` to add an image. Omitting `attachments` removes existing images. `username` / `avatar_url` are updated only when provided. Returns `200` with the message.
 - `GET` … returns the message object.
 - `DELETE` … `204 No Content`.
 - Edits/deletes are reflected **in place via SSE** on the open screen (edits don't re-notify, same as Discord).
@@ -154,7 +167,7 @@ curl -X DELETE "$WEBHOOK_URL/messages/$MID"
 
 ## Operations notes
 
-- **Data**: everything lives in `./data/noticord.db` (SQLite, WAL). Backup = just copy that file.
+- **Data**: everything, including accepted image bytes, lives in `./data/noticord.db` (SQLite, WAL). Backup = just copy that file. Image storage grows with retained history.
 - **History retention**: latest 1000 messages by default (`KeepMessages` in `internal/config`).
 - **VAPID keys**: generated on admin's first start and stored in the DB. Losing the keys invalidates existing
   subscriptions, so keep `./data`.
