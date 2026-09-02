@@ -121,7 +121,7 @@ curl -X POST "$NOTICORD_PUBLIC_URL/api/webhooks/<id>/<token>" \
   -d '{"username":"test","embeds":[{"title":"hello","description":"**bold** and `code`","color":5814783}]}'
 ```
 
-画像だけの投稿も可能です。`payload_json` と一意な `files[n]` を使い、任意の `attachments` 配列で説明を付けられます。画像は SQLite の履歴へ保存され、ログイン済みの管理画面内だけで表示されます(公開 Webhook 側は画像バイトを配信しません)。
+画像だけの投稿も可能です。`payload_json` と一意な `files[n]` を使います(`n` は 0〜2147483647 の整数)。任意の `attachments` 配列で説明を付けられます。この範囲は保存済み添付に返す snowflake 形式 ID と分離されるため、PATCH で既存画像を残したまま任意の有効な `files[n]` を追加できます。画像は SQLite の履歴へ保存され、ログイン済みの管理画面内だけで表示されます(公開 Webhook 側は画像バイトを配信しません)。
 
 ```bash
 curl -X POST "$WEBHOOK_URL?wait=true" \

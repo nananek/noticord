@@ -27,7 +27,10 @@ import (
 // maxBody is the maximum complete request size. Discord's default upload limit is
 // 10 MiB; keeping the limit on the entire multipart body bounds both image bytes
 // and attacker-controlled MIME metadata.
-const maxBody int64 = 10 << 20 // 10 MiB
+const (
+	maxBody      int64 = 10 << 20 // 10 MiB
+	maxFileIndex       = 1<<31 - 1
+)
 
 type uploadedImage struct {
 	Index       int
@@ -108,7 +111,7 @@ func messageObject(m *db.Message) map[string]any {
 		// Webhook の公開 origin には画像 GET を置かない。ここで URL を返すと
 		// CDN のように見えてしまうため、Discord 互換のメタデータだけを返す。
 		attachments = append(attachments, map[string]any{
-			"id":           strconv.FormatInt(a.ID, 10),
+			"id":           a.PublicID,
 			"filename":     a.Filename,
 			"description":  a.Description,
 			"content_type": a.ContentType,
@@ -488,7 +491,7 @@ func filePartIndex(field string) (int, bool) {
 	}
 	v := strings.TrimSuffix(strings.TrimPrefix(field, "files["), "]")
 	idx, err := strconv.Atoi(v)
-	if err != nil || idx < 0 || strconv.Itoa(idx) != v {
+	if err != nil || idx < 0 || idx > maxFileIndex || strconv.Itoa(idx) != v {
 		return 0, false
 	}
 	return idx, true
@@ -536,15 +539,17 @@ func sniffImageType(data []byte) string {
 func bindUploadMetadata(p *discord.Payload, uploads []uploadedImage) error {
 	refs := make(map[int]discord.Attachment, len(p.Attachments))
 	for _, a := range p.Attachments {
-		idx, err := attachmentIndex(a.ID)
-		if err != nil || idx < 0 {
-			return fmt.Errorf("%w: attachment id", errInvalidAttachment)
+		if a.Filename != "" && !validFilename(a.Filename) {
+			return fmt.Errorf("%w: invalid attachment filename", errInvalidAttachment)
+		}
+		// Existing attachment IDs are snowflake-shaped public IDs, while an
+		// in-range integer is a files[n] placeholder for this request.
+		idx, isUpload := attachmentFileIndex(a.ID)
+		if !isUpload {
+			continue
 		}
 		if _, exists := refs[idx]; exists {
 			return fmt.Errorf("%w: duplicate attachment id", errInvalidAttachment)
-		}
-		if a.Filename != "" && !validFilename(a.Filename) {
-			return fmt.Errorf("%w: invalid attachment filename", errInvalidAttachment)
 		}
 		refs[idx] = a
 	}
@@ -566,16 +571,16 @@ func bindUploadMetadata(p *discord.Payload, uploads []uploadedImage) error {
 	return nil
 }
 
-func attachmentIndex(id discord.AttachmentID) (int, error) {
+func attachmentFileIndex(id discord.AttachmentID) (int, bool) {
 	v := string(id)
 	if strings.TrimSpace(v) != v || v == "" {
-		return 0, errors.New("empty attachment id")
+		return 0, false
 	}
 	i, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || i < 0 || i > int64(^uint(0)>>1) {
-		return 0, errors.New("invalid attachment id")
+	if err != nil || i < 0 || i > maxFileIndex || strconv.FormatInt(i, 10) != v {
+		return 0, false
 	}
-	return int(i), nil
+	return int(i), true
 }
 
 // requireAllUploadsDescribed applies POST semantics: attachment references may
@@ -589,38 +594,33 @@ func requireAllUploadsDescribed(refs []discord.Attachment, uploads []uploadedIma
 		matched[u.Index] = true
 	}
 	for _, a := range refs {
-		idx, err := attachmentIndex(a.ID)
-		if err != nil || !matched[idx] {
+		idx, ok := attachmentFileIndex(a.ID)
+		if !ok || !matched[idx] {
 			return fmt.Errorf("%w: attachment has no file", errInvalidAttachment)
 		}
 	}
 	return nil
 }
 
-// retainedAttachmentIDs resolves PATCH's mixed attachment list. IDs that match
-// files[n] are new uploads; all other IDs must name an existing attachment to
-// retain. Omitting attachments therefore removes all current files, matching the
-// documented replacement semantics.
+// retainedAttachmentIDs resolves PATCH's two identifier spaces explicitly:
+// in-range files[n] indexes describe new uploads, while stable public IDs name
+// already stored attachments. Omitting attachments removes all current files.
 func retainedAttachmentIDs(existing []db.Attachment, refs []discord.Attachment, uploads []uploadedImage) ([]int64, error) {
 	newIndices := make(map[int]bool, len(uploads))
 	for _, u := range uploads {
 		newIndices[u.Index] = true
 	}
-	old := make(map[int64]db.Attachment, len(existing))
+	old := make(map[string]db.Attachment, len(existing))
 	for _, a := range existing {
-		old[a.ID] = a
+		old[a.PublicID] = a
 	}
 	kept := make([]int64, 0, len(refs))
 	seen := make(map[int64]bool, len(refs))
 	for _, ref := range refs {
-		idx, err := attachmentIndex(ref.ID)
-		if err != nil {
-			return nil, fmt.Errorf("%w: attachment id", errInvalidAttachment)
-		}
-		if newIndices[idx] {
+		if idx, isUpload := attachmentFileIndex(ref.ID); isUpload && newIndices[idx] {
 			continue
 		}
-		a, ok := old[int64(idx)]
+		a, ok := old[string(ref.ID)]
 		if !ok || seen[a.ID] {
 			return nil, fmt.Errorf("%w: unknown existing attachment", errInvalidAttachment)
 		}

@@ -126,9 +126,11 @@ curl -X POST "$NOTICORD_PUBLIC_URL/api/webhooks/<id>/<token>" \
   -d '{"username":"test","embeds":[{"title":"hello","description":"**bold** and `code`","color":5814783}]}'
 ```
 
-An image-only message is valid. Use `payload_json` and a uniquely numbered `files[n]` field; the optional
-`attachments` array adds its description. Images are stored in the SQLite history and displayed only after
-logging in to the private admin screen (the public webhook endpoint never serves image bytes).
+An image-only message is valid. Use `payload_json` and a uniquely numbered `files[n]` field (where `n` is
+an integer from 0 through 2147483647); the optional `attachments` array adds its description. This bounded
+index range is separate from the snowflake-shaped IDs returned for stored attachments, so PATCH can retain an
+existing image while adding any valid `files[n]`. Images are stored in the SQLite history and displayed only
+after logging in to the private admin screen (the public webhook endpoint never serves image bytes).
 
 ```bash
 curl -X POST "$WEBHOOK_URL?wait=true" \

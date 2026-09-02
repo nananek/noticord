@@ -77,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
 -- バイト列も必ず消えるよう FK cascade を使う。
 CREATE TABLE IF NOT EXISTS attachments (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  public_id    TEXT NOT NULL UNIQUE,
   message_id   INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   filename     TEXT NOT NULL,
   description  TEXT NOT NULL DEFAULT '',
@@ -160,6 +161,9 @@ func migrate(d *sql.DB) error {
 			}
 		}
 	}
+	if err := migrateAttachmentPublicIDs(d); err != nil {
+		return err
+	}
 
 	// channel_id 列が確実に存在してから(旧DBでは上の ALTER 後)インデックスを張る。
 	if _, err := d.Exec("CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at DESC)"); err != nil {
@@ -178,6 +182,46 @@ func migrate(d *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+// migrateAttachmentPublicIDs gives attachments created before public IDs were
+// introduced a stable, Discord-shaped ID. These IDs deliberately live outside
+// the files[n] index range, so retaining an attachment can never be confused
+// with metadata for a new upload.
+func migrateAttachmentPublicIDs(d *sql.DB) error {
+	ok, err := hasColumn(d, "attachments", "public_id")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if _, err := d.Exec("ALTER TABLE attachments ADD COLUMN public_id TEXT"); err != nil {
+			return err
+		}
+	}
+
+	rows, err := d.Query("SELECT id FROM attachments WHERE public_id IS NULL OR public_id='' ORDER BY id")
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := d.Exec("UPDATE attachments SET public_id=? WHERE id=?", newID(), id); err != nil {
+			return err
+		}
+	}
+	_, err = d.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_public_id ON attachments(public_id)")
+	return err
 }
 
 // ---- 乱数ユーティリティ ----
@@ -659,7 +703,8 @@ type Message struct {
 // Attachment はメッセージに紐づく画像。Data は API 応答へ JSON 化しない。
 // URL は admin API が応答時に付与する一時的な表示用の相対 URL であり、DB には保存しない。
 type Attachment struct {
-	ID          int64  `json:"id"`
+	ID          int64  `json:"-"`
+	PublicID    string `json:"id"`
 	MessageID   int64  `json:"-"`
 	Filename    string `json:"filename"`
 	Description string `json:"description,omitempty"`
@@ -724,9 +769,10 @@ func insertAttachments(tx *sql.Tx, messageID int64, attachments []Attachment) ([
 			a.CreatedAt = time.Now().Unix()
 		}
 		a.MessageID = messageID
+		a.PublicID = newID()
 		res, err := tx.Exec(
-			"INSERT INTO attachments(message_id,filename,description,content_type,size,data,created_at) VALUES(?,?,?,?,?,?,?)",
-			a.MessageID, a.Filename, a.Description, a.ContentType, a.Size, a.Data, a.CreatedAt)
+			"INSERT INTO attachments(public_id,message_id,filename,description,content_type,size,data,created_at) VALUES(?,?,?,?,?,?,?,?)",
+			a.PublicID, a.MessageID, a.Filename, a.Description, a.ContentType, a.Size, a.Data, a.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -862,7 +908,7 @@ func ListAttachmentsByMessage(d *sql.DB, messageID int64) ([]Attachment, error) 
 }
 
 func listAttachmentsByMessage(d *sql.DB, messageID int64, withData bool) ([]Attachment, error) {
-	cols := "id,message_id,filename,description,content_type,size,created_at"
+	cols := "id,public_id,message_id,filename,description,content_type,size,created_at"
 	if withData {
 		cols += ",data"
 	}
@@ -875,9 +921,9 @@ func listAttachmentsByMessage(d *sql.DB, messageID int64, withData bool) ([]Atta
 	for rows.Next() {
 		var a Attachment
 		if withData {
-			err = rows.Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
+			err = rows.Scan(&a.ID, &a.PublicID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
 		} else {
-			err = rows.Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt)
+			err = rows.Scan(&a.ID, &a.PublicID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt)
 		}
 		if err != nil {
 			return nil, err
@@ -890,8 +936,8 @@ func listAttachmentsByMessage(d *sql.DB, messageID int64, withData bool) ([]Atta
 // GetAttachment は管理 API の画像取得用に BLOB を含めて返す。
 func GetAttachment(d *sql.DB, id int64) (*Attachment, error) {
 	var a Attachment
-	err := d.QueryRow("SELECT id,message_id,filename,description,content_type,size,created_at,data FROM attachments WHERE id=?", id).
-		Scan(&a.ID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
+	err := d.QueryRow("SELECT id,public_id,message_id,filename,description,content_type,size,created_at,data FROM attachments WHERE id=?", id).
+		Scan(&a.ID, &a.PublicID, &a.MessageID, &a.Filename, &a.Description, &a.ContentType, &a.Size, &a.CreatedAt, &a.Data)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

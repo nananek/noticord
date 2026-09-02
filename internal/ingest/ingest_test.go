@@ -211,10 +211,15 @@ func TestMultipartImageLifecycle(t *testing.T) {
 	if len(posted.Attachments) != 1 || posted.Attachments[0].Filename != "pixel.png" || posted.Attachments[0].Description != "first image" || posted.Attachments[0].ContentType != "image/png" || posted.Attachments[0].Size != int64(len(png)) {
 		t.Fatalf("unexpected attachment response: %s", body)
 	}
-	firstID, err := strconv.ParseInt(posted.Attachments[0].ID, 10, 64)
+	messageID, err := strconv.ParseInt(posted.ID, 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
+	storedMessage, err := db.GetMessage(d, messageID)
+	if err != nil || storedMessage == nil || len(storedMessage.Attachments) != 1 {
+		t.Fatalf("stored message = %#v, %v", storedMessage, err)
+	}
+	firstID := storedMessage.Attachments[0].ID
 	stored, err := db.GetAttachment(d, firstID)
 	if err != nil || stored == nil || !bytes.Equal(stored.Data, png) {
 		t.Fatalf("stored image = %#v, %v", stored, err)
@@ -243,10 +248,11 @@ func TestMultipartImageLifecycle(t *testing.T) {
 	if err := json.Unmarshal(body, &patched); err != nil || len(patched.Attachments) != 2 {
 		t.Fatalf("PATCH attachments=%s err=%v", body, err)
 	}
-	secondID, err := strconv.ParseInt(patched.Attachments[1].ID, 10, 64)
-	if err != nil {
-		t.Fatal(err)
+	storedMessage, err = db.GetMessage(d, messageID)
+	if err != nil || storedMessage == nil || len(storedMessage.Attachments) != 2 {
+		t.Fatalf("patched stored message = %#v, %v", storedMessage, err)
 	}
+	secondID := storedMessage.Attachments[1].ID
 
 	// PATCH without attachments uses the documented replacement semantics.
 	resp, bodyText := do(t, http.MethodPatch, base+"/messages/"+posted.ID, `{"content":"no images"}`)
@@ -258,6 +264,85 @@ func TestMultipartImageLifecycle(t *testing.T) {
 		if err != nil || a != nil {
 			t.Fatalf("attachment %d remains after PATCH: %#v, %v", id, a, err)
 		}
+	}
+}
+
+func TestExistingAttachmentIDDoesNotCollideWithFilesIndex(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base+"?wait=true", map[string]any{
+		"attachments": []map[string]any{{"id": 0, "filename": "old.png", "description": "old image"}},
+	}, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "old.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initial multipart POST: got %d body=%s", resp.StatusCode, body)
+	}
+	var posted struct {
+		ID          string `json:"id"`
+		Attachments []struct {
+			ID string `json:"id"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &posted); err != nil || len(posted.Attachments) != 1 {
+		t.Fatalf("initial attachment response=%s err=%v", body, err)
+	}
+	publicID, err := strconv.ParseInt(posted.Attachments[0].ID, 10, 64)
+	if err != nil || publicID <= maxFileIndex {
+		t.Fatalf("attachment public ID overlaps files[n] index range: %q", posted.Attachments[0].ID)
+	}
+
+	// files[1] is valid even when an old row happened to have internal ID 1.
+	// The old public ID and new upload index must remain separate namespaces.
+	patchPayload := map[string]any{
+		"attachments": []map[string]any{
+			{"id": posted.Attachments[0].ID, "filename": "old.png"},
+			{"id": 1, "filename": "new.png", "description": "new image"},
+		},
+	}
+	resp, body = doRequest(t, multipartImageRequest(t, http.MethodPatch, base+"/messages/"+posted.ID, patchPayload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"1", "new.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH retaining old attachment and adding files[1]: got %d body=%s", resp.StatusCode, body)
+	}
+	var patched struct {
+		Attachments []struct {
+			ID          string `json:"id"`
+			Filename    string `json:"filename"`
+			Description string `json:"description"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &patched); err != nil {
+		t.Fatal(err)
+	}
+	if len(patched.Attachments) != 2 || patched.Attachments[0].ID != posted.Attachments[0].ID || patched.Attachments[1].Filename != "new.png" || patched.Attachments[1].Description != "new image" {
+		t.Fatalf("unexpected PATCH attachment response: %s", body)
+	}
+	mID, err := strconv.ParseInt(posted.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := db.GetMessage(d, mID)
+	if err != nil || m == nil || len(m.Attachments) != 2 {
+		t.Fatalf("stored attachments = %#v, %v", m, err)
+	}
+	for _, a := range m.Attachments {
+		stored, err := db.GetAttachment(d, a.ID)
+		if err != nil || stored == nil || !bytes.Equal(stored.Data, png) {
+			t.Fatalf("stored attachment %q = %#v, %v", a.PublicID, stored, err)
+		}
+	}
+}
+
+func TestFilePartIndexLimit(t *testing.T) {
+	if _, ok := filePartIndex("files[2147483647]"); !ok {
+		t.Fatal("maximum supported files[n] index was rejected")
+	}
+	if _, ok := filePartIndex("files[2147483648]"); ok {
+		t.Fatal("out-of-range files[n] index was accepted")
 	}
 }
 
@@ -273,6 +358,7 @@ func TestMultipartImageAllowsEmptyAttachmentMetadata(t *testing.T) {
 		t.Fatalf("multipart POST with empty metadata: got %d body=%s", resp.StatusCode, body)
 	}
 	var posted struct {
+		ID          string `json:"id"`
 		Attachments []struct {
 			ID          string `json:"id"`
 			Description string `json:"description"`
@@ -284,11 +370,15 @@ func TestMultipartImageAllowsEmptyAttachmentMetadata(t *testing.T) {
 	if len(posted.Attachments) != 1 || posted.Attachments[0].Description != "" {
 		t.Fatalf("unexpected attachment response: %s", body)
 	}
-	id, err := strconv.ParseInt(posted.Attachments[0].ID, 10, 64)
+	mID, err := strconv.ParseInt(posted.ID, 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a, err := db.GetAttachment(d, id); err != nil || a == nil || !bytes.Equal(a.Data, png) {
+	m, err := db.GetMessage(d, mID)
+	if err != nil || m == nil || len(m.Attachments) != 1 {
+		t.Fatalf("stored message = %#v, %v", m, err)
+	}
+	if a, err := db.GetAttachment(d, m.Attachments[0].ID); err != nil || a == nil || !bytes.Equal(a.Data, png) {
 		t.Fatalf("stored image = %#v, %v", a, err)
 	}
 }
