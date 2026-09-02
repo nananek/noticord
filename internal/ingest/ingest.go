@@ -554,7 +554,9 @@ func bindUploadMetadata(p *discord.Payload, uploads []uploadedImage) error {
 	for i := range uploads {
 		a, ok := refs[uploads[i].Index]
 		if !ok {
-			return fmt.Errorf("%w: missing metadata for files[%d]", errInvalidAttachment, uploads[i].Index)
+			// attachments is optional. In particular, clients that serialize an
+			// empty array instead of omitting it must be able to upload a file.
+			continue
 		}
 		if a.Filename != "" && a.Filename != uploads[i].Filename {
 			return fmt.Errorf("%w: filename does not match files[%d]", errInvalidAttachment, uploads[i].Index)

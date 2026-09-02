@@ -261,6 +261,38 @@ func TestMultipartImageLifecycle(t *testing.T) {
 	}
 }
 
+func TestMultipartImageAllowsEmptyAttachmentMetadata(t *testing.T) {
+	srv, tok, d := setupWithDB(t)
+	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
+	payload := map[string]any{"attachments": []any{}}
+	resp, body := doRequest(t, multipartImageRequest(t, http.MethodPost, base+"?wait=true", payload, []struct {
+		Index, Name, ContentType string
+		Data                     []byte
+	}{{"0", "pixel.png", "image/png", png}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("multipart POST with empty metadata: got %d body=%s", resp.StatusCode, body)
+	}
+	var posted struct {
+		Attachments []struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(body, &posted); err != nil {
+		t.Fatal(err)
+	}
+	if len(posted.Attachments) != 1 || posted.Attachments[0].Description != "" {
+		t.Fatalf("unexpected attachment response: %s", body)
+	}
+	id, err := strconv.ParseInt(posted.Attachments[0].ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := db.GetAttachment(d, id); err != nil || a == nil || !bytes.Equal(a.Data, png) {
+		t.Fatalf("stored image = %#v, %v", a, err)
+	}
+}
+
 func TestRejectsInvalidMultipartWithoutResidue(t *testing.T) {
 	srv, tok, d := setupWithDB(t)
 	base := srv.URL + "/api/webhooks/" + tok.ID + "/" + tok.Token
